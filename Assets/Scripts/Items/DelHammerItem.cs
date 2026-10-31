@@ -20,6 +20,19 @@ namespace CarGame.Items
         [SerializeField] private string hitTrigger = "Hit";
         [SerializeField] private string idleParameter = "Idle";
 
+        [Header("Удаление по анимации")]
+        [Tooltip("Доля клика удара (0..1), на которой засчитывается попадание. " +
+                 "Таймер удаления запускается именно в момент замаха, а объект " +
+                 "исчезает через deleteDelay после этого момента — так удаление " +
+                 "не выглядит ни раньше, ни позже удара молотка")]
+        [SerializeField, Range(0f, 1f)] private float hitMomentNormalizedTime = 0.55f;
+        [Tooltip("Сколько секунд ждать исчезновения объекта после момента удара в анимации, с")]
+        [SerializeField] private float deleteDelayAfterHit = 0.12f;
+        [Tooltip("Длительность клика «Hit» в секундах. Нужна, чтобы вычислить " +
+                 "момент удара внутри анимации. Берётся из варианта руки " +
+                 "автоматически, это значение — запасное")]
+        [SerializeField] private float swingClipLength = 1.1667f;
+
         [Header("Звук")]
         [SerializeField] private AudioClip hitClip;
         [SerializeField] private AudioClip whiffClip;
@@ -35,6 +48,7 @@ namespace CarGame.Items
         private AudioClip generatedWhiffClip;
         private float nextSwingTime;
         private bool warnedAboutAnimator;
+        private Coroutine pendingDelete;
 
         private void Awake()
         {
@@ -115,16 +129,73 @@ namespace CarGame.Items
                 if (toDelete.GetComponentInParent<PlayerController>() != null) continue;
 
                 PlayHit();
-                StartCoroutine(DeleteAfterDelay(toDelete, Mathf.Max(0f, deleteDelay)));
+                ScheduleDelete(toDelete);
                 return;
             }
 
             PlayWhiff();
         }
 
+        /// <summary>
+        /// Ставит удаление в очередь: объект исчезнет не сразу, а после того
+        /// как анимация замахa дойдёт до момента удара (hitMoment) плюс
+        /// deleteDelayAfterHit. Пока молот только летит вниз, цель стоит на
+        /// месте — визуально удар и исчезновение совпадают.
+        /// </summary>
+        private void ScheduleDelete(GameObject target)
+        {
+            float hitMoment = GetSwingHitMoment();
+            float delay = Mathf.Max(0f, deleteDelay) + hitMoment + Mathf.Max(0f, deleteDelayAfterHit);
+
+            if (pendingDelete != null) StopCoroutine(pendingDelete);
+            pendingDelete = StartCoroutine(DeleteAfterDelay(target, delay));
+        }
+
+        /// <summary>
+        /// Момент удара внутри клика «Hit» в секундах: длительность клика
+        /// берётся из состояния Hit активного аниматора, доля — из
+        /// <see cref="hitMomentNormalizedTime"/>. Если аниматора нет или клик
+        /// не найден — используется запасная длина swingClipLength.
+        /// </summary>
+        private float GetSwingHitMoment()
+        {
+            float clipLength = ResolveHitClipLength();
+            return clipLength * Mathf.Clamp01(hitMomentNormalizedTime);
+        }
+
+        private float ResolveHitClipLength()
+        {
+            Animator anim = activeAnimator;
+            if (anim != null && anim.runtimeAnimatorController != null && !string.IsNullOrEmpty(hitTrigger))
+            {
+                AnimationClip hitClip = FindClipForState(anim.runtimeAnimatorController, hitTrigger);
+                if (hitClip != null && hitClip.length > 0.01f) return hitClip.length;
+            }
+
+            return Mathf.Max(0.01f, swingClipLength);
+        }
+
+        private static AnimationClip FindClipForState(RuntimeAnimatorController controller, string stateName)
+        {
+            // В контроллере DelHammer состояние называется так же, как триггер
+            // («Hit»), поэтому ищем состояние по имени напрямую среди клипов.
+            AnimationClip[] clips = controller.animationClips;
+            if (clips == null || clips.Length == 0) return null;
+
+            for (int i = 0; i < clips.Length; i++)
+            {
+                AnimationClip clip = clips[i];
+                if (clip != null && string.Equals(clip.name, stateName, System.StringComparison.OrdinalIgnoreCase))
+                    return clip;
+            }
+
+            return null;
+        }
+
         private IEnumerator DeleteAfterDelay(GameObject target, float delay)
         {
             if (delay > 0f) yield return new WaitForSeconds(delay);
+            pendingDelete = null;
             if (target != null)
             {
                 if (target.GetComponentInParent<PlayerController>() != null) yield break;
