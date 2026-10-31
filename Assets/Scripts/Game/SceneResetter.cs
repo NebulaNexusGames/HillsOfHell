@@ -95,6 +95,13 @@ namespace CarGame.Game
             TerminalUI.AllowRebase();
             UiState.ResetMenuState();
 
+            // Снимок эталона панели делаем сразу при загрузке — до Start()
+            // SpawnTerminal, которые могут создать панель кодом (Show). Так
+            // гарантированно берём сценный объект из файла .unity, а не
+            // рантайм-экземпляр, и HUD терминалов после рестарта выглядит
+            // ровно как при первом запуске.
+            TerminalUI.CaptureFromSceneObject();
+
             StartCoroutine(RestorePlayabilityNextFrame());
         }
 
@@ -140,18 +147,26 @@ namespace CarGame.Game
         /// </summary>
         private static void ReattachTerminalPanels()
         {
-            TerminalUI[] panels = Object.FindObjectsByType<TerminalUI>(FindObjectsInactive.Include);
+            TerminalUI[] panels = Object.FindObjectsByType<TerminalUI>(FindObjectsSortMode.None, FindObjectsInactive.Include);
             for (int i = 0; i < panels.Length; i++)
             {
                 TerminalUI panel = panels[i];
                 if (panel == null) continue;
+
+                // Страховка: панель, пережившая перезагрузку как DontDestroyOnLoad,
+                // обязана быть отвязана от уничтоженного терминала старой сцены.
+                // Иначе rig останется висеть на мёртвой позиции и HUD «съедет».
+                if (!panel.gameObject.scene.IsValid())
+                {
+                    Object.Destroy(panel.gameObject);
+                    continue;
+                }
+
                 panel.RebindAfterSceneLoad();
             }
 
-            // Страховка на случай, если хост-объект сцены был активен и в
-            // предыдущем забеге: sceneLoaded тогда не переснимал эталон панели.
-            // Теперь снимок берётся с freshly loaded объекта из файла сцены —
-            // ровно таким, каким терминал настроен в проекте.
+            // Страховка: если эталон ещё не зафиксирован (например, хост
+            // подключился позже первого sceneLoaded), снимаем его сейчас.
             TerminalUI.CaptureFromSceneObject();
         }
     }
