@@ -147,7 +147,7 @@ namespace CarGame.Game
         /// </summary>
         private static void ReattachTerminalPanels()
         {
-            TerminalUI[] panels = Object.FindObjectsByType<TerminalUI>(FindObjectsSortMode.None, FindObjectsInactive.Include);
+            TerminalUI[] panels = Object.FindObjectsByType<TerminalUI>(FindObjectsInactive.Include, FindObjectsSortMode.None);
             for (int i = 0; i < panels.Length; i++)
             {
                 TerminalUI panel = panels[i];
