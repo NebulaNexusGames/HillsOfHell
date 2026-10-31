@@ -1,0 +1,6 @@
+Setting linear velocity of a kinematic body is not supported.
+UnityEngine.Rigidbody:set_linearVelocity (UnityEngine.Vector3)
+CarGame.Vehicle.CarDoor:LockDoor () (at Assets/Scripts/Vehicle/CarDoor.cs:62)
+CarGame.Vehicle.CarDoor:CacheStart () (at Assets/Scripts/Vehicle/CarDoor.cs:54)
+CarGame.Vehicle.CarDoor:Awake () (at Assets/Scripts/Vehicle/CarDoor.cs:44)
+

@@ -1,0 +1,765 @@
+using CarGame.Effects;
+using CarGame.Player;
+using CarGame.Vehicle;
+using UnityEngine;
+
+namespace CarGame.Combat
+{
+    public abstract class EnemyBase : MonoBehaviour
+    {
+[Header("Зрение")]
+        [Tooltip("С какой дистанции робот вообще замечает цель, м. Дальше он ничего не делает и стоит на патруле")]
+        [SerializeField] private float detectRange = 28f;
+        [Tooltip("Жёсткий потолок зрения. Даже если detectRange в сцене забыли поправить, робот не увидит цель дальше этого расстояния")]
+        [SerializeField] private float maxDetectRange = 30f;
+        [Tooltip("Проверять ли, что цель видно напрямую. Выключи, если нужно, чтобы робот реагировал сквозь стены")]
+        [SerializeField] private bool requireLineOfSight = true;
+        [Tooltip("Слои, которые заслоняют обзор")]
+        [SerializeField] private LayerMask sightBlockers = ~0;
+        [Tooltip("Сколько секунд не нужно видеть цель, чтобы забыть её")]
+        [SerializeField] private float loseTargetMemory = 4f;
+        [Tooltip("Проверять, дотягивается ли робот до цели по высоте и расстоянию. Выключи — будет преследовать любую цель в зоне видимости")]
+        [SerializeField] private bool requireReachableTarget = true;
+        [Tooltip("Высота цели над её точкой отсчёта, м. Обычно центр груди или капота")]
+        [SerializeField] private float targetHeightOffset = 1f;
+        [Tooltip("Максимальная разница высот между роботом и целью, м. Выше — цель считается недостижимой и робот прекращает преследование")]
+        [SerializeField] private float maxTargetHeight = 6f;
+        [Tooltip("На сколько метров робот может отойти от цели по горизонтали, считая это досягаемым")]
+        [SerializeField] private float attackReach = 3.5f;
+        [Tooltip("Максимальный уклон, который робот способен забраться, градусы. Круче — считается стеной")]
+        [SerializeField] private float maxClimbSlope = 40f;
+        [Tooltip("Допуск по высоте, в пределах которого цель считается на своём уровне, м")]
+        [SerializeField] private float verticalReach = 2.2f;
+
+        [Header("Патруль")]
+        [Tooltip("Точки, по которым ходит робот, пока никого не видит. Если пусто — патрулирует вокруг места спавна")]
+        [SerializeField] private Transform[] patrolPoints = new Transform[0];
+        [Tooltip("На каком расстоянии считать точку патруля достигнутой, м")]
+        [SerializeField] private float patrolPointTolerance = 1.6f;
+[Tooltip("Радиус блуждания вокруг спавна, если точки патруля не заданы, м")]
+        [SerializeField] private float patrolRadius = 10f;
+        [Tooltip("Скорость патрулирования, м/с")]
+        [SerializeField] private float patrolSpeed = 1.9f;
+        [Tooltip("Стоять на месте после достижения точки патруля, с. 0 — не останавливаться")]
+        [SerializeField] private float patrolWaitTime = 1.5f;
+        [Tooltip("Стоять на точке ровно это время, с. 0 — использовать patrolWaitTime")]
+        [SerializeField] private float restDuration = 5f;
+        [Tooltip("Шанс, что робот отдыхает полный restDuration, а не короткий patrolWaitTime. 1 — всегда полный отдых")]
+        [SerializeField][Range(0f, 1f)] private float restChance = 0.75f;
+
+        [Header("Обход препятствий")]
+        [Tooltip("Насколько далеко робот проверяет путь перед собой, м")]
+        [SerializeField] private float obstacleProbe = 2.4f;
+        [Tooltip("Слои, которые считаются препятствиями для обхода")]
+        [SerializeField] private LayerMask obstacleMask = ~0;
+        [Tooltip("Обходить ли низкий мусор под ногами, который цепляет корпус и тормозит робота")]
+        [SerializeField] private bool avoidLowDebris = true;
+        [Tooltip("Шаг перебора направлений при обходе, градусы. Чем меньше — тем плотнее сканирование")]
+        [SerializeField] private float avoidAngleStep = 20f;
+        [Tooltip("Насколько шире самого робота проверять проход, м. Больше запас — меньше застреваний в углу")]
+        [SerializeField] private float avoidClearance = 0.12f;
+        [Tooltip("Доля от высоты робота, на которой проверяется путь. 0.5 — середина корпуса")]
+        [SerializeField] private float avoidHeightFactor = 0.55f;
+        [Tooltip("Высота проверки мусора под ногами, м")]
+        [SerializeField] private float debrisHeight = 0.3f;
+
+        [Header("Поверхность под ногами")]
+        [Tooltip("Слои пола. По ним определяется, ровная поверхность под роботом или подъём")]
+        [SerializeField] private LayerMask groundMask = ~0;
+        [Tooltip("Насколько далеко вперёд проверять уклон, м")]
+        [SerializeField] private float slopeProbeDistance = 1.6f;
+        [Tooltip("Высота, с которой опускается зонд на землю, м")]
+        [SerializeField] private float slopeProbeHeight = 2.5f;
+        [Tooltip("Перепад высот, который робот переступает автоматически: бордюры, ступеньки, мелкие неровности, м")]
+        [SerializeField] private float stepUpHeight = 0.35f;
+
+        [Header("Застревание")]
+        [Tooltip("Скорость, ниже которой робот считается буксующим на месте, м/с")]
+        [SerializeField] private float stuckSpeed = 0.4f;
+        [Tooltip("Сколько секунд робот должен буксовать, прежде чем включить принудительный объезд")]
+        [SerializeField] private float stuckDelay = 0.7f;
+        [Tooltip("Сколько секунд держать объезд в выбранную сторону, с")]
+        [SerializeField] private float detourDuration = 1.3f;
+
+        protected Health health;
+        protected PlayerController player;
+
+        private Transform currentPatrolPoint;
+        private float pauseUntil;
+        private float patrolWaitUntil => pauseUntil;
+        private float lastSeenTime = -100f;
+        private float repathTime;
+        private Vector3 wanderTarget;
+        private Vector3 spawnPoint;
+
+        private Vector3 halfExtents = new Vector3(0.35f, 0.9f, 0.35f);
+        private float bodyHalfHeight = 1.8f;
+        private Rigidbody selfBody;
+        private bool detourActive;
+        private float detourTimer;
+        private Vector3 detourDirection;
+        private float stuckTimer;
+        private Vector3 lastSweepNormal;
+        private bool reverseFlipped;
+        protected bool climbing;
+        private RaycastHit lastSweepHit;
+        private Collider overlapHit;
+        private static readonly Collider[] sweepBuffer = new Collider[16];
+        private static readonly RaycastHit[] groundBuffer = new RaycastHit[16];
+        private static readonly RaycastHit[] sightBuffer = new RaycastHit[16];
+
+        public Health Health => health;
+        public float DetectRange => Mathf.Clamp(detectRange, 0.5f, Mathf.Max(0.5f, maxDetectRange)) * BloodMoonVisionMultiplier;
+        public Vector3 FrontPosition => transform.position + FrontOffset;
+        public Vector3 FrontForward => transform.forward;
+        protected Vector3 FrontOffset { get; private set; }
+        protected float PatrolSpeed => patrolSpeed;
+        protected float PatrolRadius => patrolRadius;
+        protected float PatrolWaitTime => patrolWaitTime;
+        protected float PatrolPointTolerance => patrolPointTolerance;
+        protected Vector3 SpawnPoint => spawnPoint;
+        public Health Target { get; protected set; }
+        public bool HasTarget => Target != null && !Target.IsDead;
+
+        protected virtual void BaseAwake()
+        {
+            spawnPoint = transform.position;
+            selfBody = GetComponent<Rigidbody>();
+            ReadOwnSize();
+            PickNextPatrolPoint();
+        }
+
+        private void ReadOwnSize()
+        {
+            Collider own = GetComponent<Collider>();
+            if (own == null)
+            {
+                halfExtents = new Vector3(0.35f, 0.9f, 0.35f) + Vector3.one * avoidClearance;
+                bodyHalfHeight = 0.9f;
+                return;
+            }
+
+            Vector3 scale = Vector3.one;
+            float radius = 0.35f;
+            float height = 1.8f;
+            Vector3 center = Vector3.zero;
+            bool resolved = false;
+
+            if (own is CapsuleCollider capsule)
+            {
+                scale = capsule.transform.lossyScale;
+                radius = capsule.radius * Mathf.Abs(scale.x);
+                height = capsule.height * Mathf.Abs(scale.y);
+                center = Vector3.Scale(capsule.center, scale);
+                resolved = true;
+            }
+            else if (own is BoxCollider box)
+            {
+                scale = box.transform.lossyScale;
+                radius = 0.5f * (Mathf.Abs(box.size.x * scale.x) + Mathf.Abs(box.size.z * scale.z));
+                height = Mathf.Abs(box.size.y * scale.y);
+                center = Vector3.Scale(box.center, scale);
+                resolved = true;
+            }
+            else if (own is SphereCollider sphere)
+            {
+                scale = sphere.transform.lossyScale;
+                radius = Mathf.Max(Mathf.Abs(sphere.radius * scale.x), Mathf.Abs(sphere.radius * scale.z));
+                height = radius * 2f;
+                center = Vector3.Scale(sphere.center, scale);
+                resolved = true;
+            }
+
+            if (!resolved)
+            {
+                Bounds fallback = own.bounds;
+                float sy = Mathf.Max(0.1f, Mathf.Abs(fallback.size.y) * 0.5f);
+
+                radius = Mathf.Max(0.05f, Mathf.Max(Mathf.Abs(fallback.size.x), Mathf.Abs(fallback.size.z)) * 0.4f);
+                height = sy * 2f;
+                center = Vector3.zero;
+            }
+
+            radius = Mathf.Max(0.05f, radius);
+            height = Mathf.Max(radius * 2f, height);
+
+            bodyHalfHeight = height * 0.5f;
+            halfExtents = new Vector3(radius, bodyHalfHeight, radius) + Vector3.one * avoidClearance;
+            FrontOffset = center;
+        }
+
+        protected void FaceDirection(Vector3 direction, float turnSpeed, float deltaTime)
+        {
+            Vector3 flat = Vector3.ProjectOnPlane(direction, Vector3.up);
+            if (flat.sqrMagnitude < 0.0001f) return;
+
+            transform.rotation = Quaternion.RotateTowards(
+                transform.rotation,
+                Quaternion.LookRotation(flat.normalized, Vector3.up),
+                turnSpeed * deltaTime);
+        }
+
+        protected virtual void BaseUpdate()
+        {
+            climbing = false;
+            UpdateTarget();
+        }
+
+        private void UpdateTarget()
+        {
+            if (player == null) player = FindPlayer();
+
+            // Пока цель есть, каждый кадр проверяем, видно ли её. Так робот не
+            // уходит в стену, преследуя позицию, которую потерял из виду: как
+            // только зрение пропало и память истекла — цель сбрасывается.
+            if (HasTarget)
+            {
+                if (IsTargetVisible(Target))
+                {
+                    lastSeenTime = Time.time;
+                }
+                else if (Time.time - lastSeenTime > loseTargetMemory || !IsTargetReachable(Target))
+                {
+                    Target = null;
+                    detourActive = false;
+                    return;
+                }
+            }
+
+            if (!HasTarget) TryAcquireTarget();
+        }
+
+        private bool TryAcquireTarget()
+        {
+            if (player == null) return false;
+
+            Health candidate = player.IsInCar && player.CurrentVehicle != null
+                ? player.CurrentVehicle.Health
+                : player.Health;
+
+            if (candidate == null || candidate.IsDead) return false;
+
+            Vector3 toTarget = candidate.transform.position - transform.position;
+            if (toTarget.magnitude > DetectRange) return false;
+            if (!IsTargetReachable(candidate)) return false;
+
+            if (requireLineOfSight && !HasLineOfSight(candidate)) return false;
+
+            lastSeenTime = Time.time;
+            Target = candidate;
+            return true;
+        }
+
+        protected virtual bool IsTargetReachable(Health candidate)
+        {
+            if (!requireReachableTarget || candidate == null) return true;
+
+            Vector3 targetCenter = candidate.transform.position + Vector3.up * targetHeightOffset;
+            Vector3 selfCenter = transform.position + Vector3.up * targetHeightOffset;
+            Vector3 toTarget = targetCenter - selfCenter;
+
+            float height = Mathf.Abs(toTarget.y);
+            float flat = new Vector2(toTarget.x, toTarget.z).magnitude;
+
+            if (height > maxTargetHeight) return false;
+            if (height <= verticalReach) return true;
+
+            float slopeLimit = maxClimbSlope;
+            if (slopeLimit <= 0.01f) return flat <= attackReach;
+
+            float slope = Mathf.Atan2(height, Mathf.Max(0.05f, flat)) * Mathf.Rad2Deg;
+            if (slope <= slopeLimit) return true;
+
+            return flat <= attackReach;
+        }
+
+        /// <summary>
+        /// Видна ли цель прямо сейчас: в пределах дальности зрения и без преград.
+        /// Проверяется каждый кадр, пока цель живёт, чтобы робот не шёл сквозь
+        /// стену к цели, которую давно потерял из виду.
+        /// </summary>
+        protected bool IsTargetVisible(Health candidate)
+        {
+            if (candidate == null || candidate.IsDead) return false;
+
+            Vector3 flat = Vector3.ProjectOnPlane(candidate.transform.position - transform.position, Vector3.up);
+            if (flat.magnitude > DetectRange) return false;
+
+            if (requireLineOfSight && !HasLineOfSight(candidate)) return false;
+
+            return true;
+        }
+
+        protected bool HasLineOfSight(Health target)
+        {
+            if (target == null) return false;
+
+            Vector3 origin = FrontPosition + Vector3.up * 1.2f;
+            Vector3 destination = target.transform.position + Vector3.up * 0.9f;
+            Vector3 direction = destination - origin;
+            float distance = direction.magnitude;
+            if (distance < 0.05f) return true;
+            direction /= distance;
+
+            int count = Physics.RaycastNonAlloc(origin, direction, sightBuffer, distance, sightBlockers, QueryTriggerInteraction.Ignore);
+
+            float nearest = float.MaxValue;
+            Collider nearestCollider = null;
+
+            for (int i = 0; i < count; i++)
+            {
+                Collider candidate = sightBuffer[i].collider;
+                if (candidate == null || IsSelf(candidate)) continue;
+                if (sightBuffer[i].distance >= nearest) continue;
+
+                nearest = sightBuffer[i].distance;
+                nearestCollider = candidate;
+            }
+
+            if (nearestCollider == null) return true;
+            return IsColliderOf(target, nearestCollider);
+        }
+
+        private static bool IsColliderOf(Health target, Collider candidate)
+        {
+            if (target == null || candidate == null) return false;
+
+            Transform hit = candidate.transform;
+            return hit == target.transform || hit.IsChildOf(target.transform);
+        }
+
+        protected Vector3 ResolveDestination()
+        {
+            if (HasTarget) return Target.transform.position;
+            return ResolvePatrolDestination();
+        }
+
+        private Vector3 ResolvePatrolDestination()
+        {
+            if (patrolPoints != null && patrolPoints.Length > 0)
+            {
+                if (currentPatrolPoint == null) PickNextPatrolPoint();
+
+                Transform point = currentPatrolPoint;
+                if (point == null)
+                {
+                    PickNextPatrolPoint();
+                    return ResolvePatrolDestination();
+                }
+
+                Vector3 flat = Vector3.ProjectOnPlane(point.position - transform.position, Vector3.up);
+                if (flat.magnitude <= patrolPointTolerance)
+                {
+                    if (Time.time >= patrolWaitUntil)
+                    {
+                        PickNextPatrolPoint();
+                        BeginPause(restDuration);
+                    }
+
+                    return transform.position;
+                }
+
+                return point.position;
+            }
+
+            if (Time.time >= pauseUntil || (wanderTarget - transform.position).sqrMagnitude < 1f)
+            {
+                Vector2 offset = Random.insideUnitCircle * patrolRadius;
+                wanderTarget = new Vector3(spawnPoint.x + offset.x, spawnPoint.y, spawnPoint.z + offset.y);
+                float rest = restDuration > 0f ? restDuration : patrolWaitTime;
+                BeginPause(Random.Range(rest, rest * 2f));
+            }
+
+            return wanderTarget;
+        }
+
+        protected void BeginPause(float duration)
+        {
+            if (restDuration > 0f && Random.value <= restChance) duration = restDuration;
+            pauseUntil = Time.time + Mathf.Max(0.1f, duration > 0f ? duration : patrolWaitTime);
+        }
+
+        private void PickNextPatrolPoint()
+        {
+            if (patrolPoints == null || patrolPoints.Length == 0)
+            {
+                currentPatrolPoint = null;
+                return;
+            }
+
+            int start = Random.Range(0, patrolPoints.Length);
+            for (int i = 0; i < patrolPoints.Length; i++)
+            {
+                Transform candidate = patrolPoints[(start + i) % patrolPoints.Length];
+                if (candidate == null) continue;
+                currentPatrolPoint = candidate;
+                return;
+            }
+
+            currentPatrolPoint = null;
+        }
+
+        protected Vector3 ComputeAvoidance(Vector3 desiredDirection)
+        {
+            Vector3 flat = Vector3.ProjectOnPlane(desiredDirection, Vector3.up);
+            if (flat.sqrMagnitude < 0.0001f) return desiredDirection;
+
+            flat.Normalize();
+
+            if (detourActive)
+            {
+                detourTimer -= Time.deltaTime;
+                if (detourTimer <= 0f) detourActive = false;
+                else return detourDirection;
+            }
+
+            Vector3 bodyOrigin = FrontPosition + Vector3.up * (bodyHalfHeight * 2f * (avoidHeightFactor - 0.5f));
+            if (!IsBlocked(bodyOrigin, flat, halfExtents)) return flat;
+
+            repathTime = Time.time + 0.35f;
+            Vector3 contactNormal = Vector3.ProjectOnPlane(lastSweepNormal, Vector3.up).normalized;
+            if (contactNormal.sqrMagnitude < 0.5f) contactNormal = -flat;
+
+            if (TrySlideAlongWall(bodyOrigin, flat, contactNormal, out Vector3 slide)) return slide;
+
+            if (TryScan(bodyOrigin, flat, out Vector3 free)) return free;
+
+            StartReversal();
+            return detourDirection;
+        }
+
+        private bool TrySlideAlongWall(Vector3 origin, Vector3 forward, Vector3 normal, out Vector3 result)
+        {
+            result = forward;
+
+            Vector3 along = Vector3.Cross(Vector3.up, normal);
+            if (along.sqrMagnitude < 0.0001f) return false;
+            along.Normalize();
+
+            Vector3 first = Vector3.Dot(along, forward) >= 0f ? along : -along;
+            Vector3 second = -first;
+
+            if (TrySlideAlong(origin, first, forward, normal, out result)) return true;
+            if (TrySlideAlong(origin, second, forward, normal, out result)) return true;
+
+            return false;
+        }
+
+        private bool TrySlideAlong(Vector3 origin, Vector3 along, Vector3 forward, Vector3 normal, out Vector3 result)
+        {
+            result = forward;
+
+            if (IsBlocked(origin, along, halfExtents))
+            {
+                result = forward;
+                return false;
+            }
+
+            detourDirection = (along - normal * Vector3.Dot(along, normal)).normalized;
+            if (detourDirection.sqrMagnitude < 0.0001f) detourDirection = along;
+
+            result = detourDirection;
+            detourTimer = detourDuration;
+            detourActive = true;
+
+            return true;
+        }
+
+        private void StartReversal()
+        {
+            Vector3 reference = HasTarget && Target != null ? Target.transform.position - FrontPosition : wanderTarget - FrontPosition;
+            Vector3 forward = Vector3.ProjectOnPlane(reference, Vector3.up);
+
+            if (forward.sqrMagnitude < 0.0001f) forward = transform.forward;
+            forward.Normalize();
+
+            detourDirection = -forward;
+            detourTimer = detourDuration * 2f;
+            detourActive = true;
+        }
+
+        protected bool IsPathClear(Vector3 direction)
+        {
+            if (obstacleProbe <= 0.05f) return true;
+
+            Vector3 flat = Vector3.ProjectOnPlane(direction, Vector3.up);
+            if (flat.sqrMagnitude < 0.0001f) return true;
+            flat.Normalize();
+
+            Vector3 origin = FrontPosition + Vector3.up * (bodyHalfHeight * 2f * (avoidHeightFactor - 0.5f));
+            if (IsBlocked(origin, flat, halfExtents * 0.5f)) return false;
+
+            Vector3 debrisExtents = new Vector3(halfExtents.x, debrisHeight * 0.5f, halfExtents.z);
+            Vector3 debrisOrigin = new Vector3(origin.x, FrontPosition.y + debrisHeight * 0.5f, origin.z);
+            if (avoidLowDebris
+                && Sweep(debrisOrigin, debrisExtents, flat, bodyHalfHeight)
+                && !IsSelf(BlockingCollider)
+                && !IsGroundClimbable(flat))
+                return false;
+
+            return true;
+        }
+
+        private bool TryScan(Vector3 origin, Vector3 forward, out Vector3 result)
+        {
+            result = forward;
+            if (obstacleProbe <= 0.05f) return true;
+
+            float step = Mathf.Clamp(avoidAngleStep, 5f, 90f);
+
+            for (float offset = step; offset <= 150f; offset += step)
+            {
+                float radians = offset * Mathf.Deg2Rad;
+
+                Vector3 right = Quaternion.AngleAxis(-radians, Vector3.up) * forward;
+                if (!IsBlocked(origin, right, halfExtents)) { result = right; return true; }
+
+                Vector3 left = Quaternion.AngleAxis(radians, Vector3.up) * forward;
+                if (!IsBlocked(origin, left, halfExtents)) { result = left; return true; }
+            }
+
+            return false;
+        }
+
+        private void StartDetour()
+        {
+            Vector3 reference = HasTarget && Target != null ? Target.transform.position - FrontPosition : wanderTarget - FrontPosition;
+            Vector3 forward = Vector3.ProjectOnPlane(reference, Vector3.up);
+
+            if (forward.sqrMagnitude < 0.0001f) forward = transform.forward;
+            forward.Normalize();
+
+            int sign = reverseFlipped ? -1 : 1;
+            reverseFlipped = !reverseFlipped;
+
+            detourDirection = Quaternion.AngleAxis(sign * (90f + Random.Range(0f, 45f)), Vector3.up) * forward;
+            detourTimer = detourDuration;
+            detourActive = true;
+        }
+
+        protected void UpdateStuckCheck(Vector3 velocity, bool wantsToMove)
+        {
+            if (climbing) return;
+
+            if (!wantsToMove)
+            {
+                stuckTimer = 0f;
+                detourActive = false;
+                return;
+            }
+
+            float speed = new Vector2(velocity.x, velocity.z).magnitude;
+            if (speed >= stuckSpeed) stuckTimer = 0f;
+            else stuckTimer += Time.deltaTime;
+
+            if (stuckTimer < stuckDelay) return;
+
+            stuckTimer = 0f;
+            if (detourActive) detourTimer = Mathf.Max(detourTimer, detourDuration * 0.6f);
+            else StartDetour();
+        }
+
+        private bool IsBlocked(Vector3 origin, Vector3 direction, Vector3 extents)
+        {
+            if (obstacleProbe <= 0.05f) return false;
+
+            if (Sweep(origin, extents, direction, obstacleProbe) && !IsSelf(BlockingCollider) && !IsTargetCollider(BlockingCollider))
+            {
+                if (IsGroundClimbable(direction))
+                {
+                    climbing = true;
+                    return false;
+                }
+
+                return true;
+            }
+
+            if (!avoidLowDebris || debrisHeight <= 0.02f) return false;
+
+            Vector3 debrisExtents = new Vector3(extents.x, debrisHeight * 0.5f, extents.z);
+            Vector3 debrisOrigin = new Vector3(origin.x, GroundLevel + debrisHeight * 0.5f, origin.z);
+
+            if (Sweep(debrisOrigin, debrisExtents, direction, obstacleProbe * 0.6f) && !IsSelf(BlockingCollider) && !IsTargetCollider(BlockingCollider))
+                return true;
+
+            return false;
+        }
+
+        /// <summary>
+        /// Цель не считается препятствием, иначе робот начинает обходить того,
+        /// к кому сам бежит, и это выглядит как попытка уклониться от игрока.
+        /// </summary>
+        protected bool IsTargetCollider(Collider candidate)
+        {
+            if (candidate == null || Target == null) return false;
+
+            Transform hit = candidate.transform;
+            return hit == Target.transform || hit.IsChildOf(Target.transform);
+        }
+
+        private float GroundLevel => transform.position.y;
+
+        private bool Sweep(Vector3 origin, Vector3 extents, Vector3 direction, float distance)
+        {
+            if (distance <= 0.05f)
+            {
+                int count = Physics.OverlapBoxNonAlloc(origin, extents, sweepBuffer, Quaternion.identity, obstacleMask, QueryTriggerInteraction.Ignore);
+
+                for (int i = 0; i < count; i++)
+                {
+                    if (IsSelf(sweepBuffer[i])) continue;
+
+                    overlapHit = sweepBuffer[i];
+                    lastSweepNormal = MeasureContactNormal(sweepBuffer[i], origin, direction);
+
+                    return true;
+                }
+
+                return false;
+            }
+
+            Physics.BoxCast(origin, extents, direction, out RaycastHit hit, Quaternion.identity, distance, obstacleMask, QueryTriggerInteraction.Ignore);
+
+            lastSweepHit = hit;
+            lastSweepNormal = hit.collider != null ? MeasureContactNormal(hit.collider, hit.point, direction) : Vector3.zero;
+
+            return hit.collider != null;
+        }
+
+        private Vector3 MeasureContactNormal(Collider blocker, Vector3 contact, Vector3 sweepDirection)
+        {
+            if (blocker == null) return Vector3.zero;
+
+            Vector3 back = new Vector3(contact.x, 0f, contact.z) - new Vector3(sweepDirection.x, 0f, sweepDirection.z) * 0.08f;
+            Vector3 probeOrigin = new Vector3(back.x, GroundLevel + slopeProbeHeight * 0.75f, back.z);
+
+            if (Physics.Raycast(probeOrigin, Vector3.down, out RaycastHit face, slopeProbeHeight * 1.6f, obstacleMask, QueryTriggerInteraction.Ignore)
+                && face.collider == blocker
+                && !IsSelf(face.collider))
+                return face.normal;
+
+            Vector3 boxNormal = Vector3.ProjectOnPlane(blocker.transform.up, Vector3.up);
+            if (boxNormal.sqrMagnitude > 0.01f) return boxNormal.normalized;
+
+            return Vector3.ProjectOnPlane(-sweepDirection, Vector3.up).normalized;
+        }
+
+        protected bool IsGroundClimbable(Vector3 direction)
+        {
+            float rise = MeasureStepAhead(direction);
+            return rise >= 0f && rise <= MaxClimbableRise();
+        }
+
+        private float MaxClimbableRise()
+        {
+            float slopeRise = Mathf.Tan(maxClimbSlope * Mathf.Deg2Rad) * slopeProbeDistance;
+            return slopeRise + stepUpHeight;
+        }
+
+        protected float ClimbSpeed(Vector3 direction, float speed)
+        {
+            if (!climbing) return 0f;
+
+            float rise = MeasureStepAhead(direction);
+            if (rise <= stepUpHeight) return 0f;
+
+            Vector3 flat = Vector3.ProjectOnPlane(direction, Vector3.up);
+            if (flat.sqrMagnitude < 0.0001f) return 0f;
+
+            float run = Mathf.Max(slopeProbeDistance, flat.magnitude);
+            float slope = rise / run;
+            float maxSlope = Mathf.Tan(maxClimbSlope * Mathf.Deg2Rad);
+            if (slope <= maxSlope) return 0f;
+
+            return Mathf.Min(speed * 0.5f, speed * slope);
+        }
+
+        private float MeasureStepAhead(Vector3 direction)
+        {
+            Vector3 flat = Vector3.ProjectOnPlane(direction, Vector3.up);
+            if (flat.sqrMagnitude < 0.0001f) return -1f;
+            flat.Normalize();
+
+            float here = GroundHeightAt(FrontPosition);
+            float ahead = GroundHeightAt(FrontPosition + flat * slopeProbeDistance);
+
+            if (here < -900f || ahead < -900f) return -1f;
+
+            return ahead - here;
+        }
+
+        private float GroundHeightAt(Vector3 origin)
+        {
+            Vector3 from = new Vector3(origin.x, GroundLevel + slopeProbeHeight, origin.z);
+            float distance = slopeProbeHeight * 2f + 1f;
+
+            int count = Physics.RaycastNonAlloc(
+                from,
+                Vector3.down,
+                groundBuffer,
+                distance,
+                groundMask,
+                QueryTriggerInteraction.Ignore);
+
+            float best = -1000f;
+
+            for (int i = 0; i < count; i++)
+            {
+                Collider candidate = groundBuffer[i].collider;
+                if (candidate == null) continue;
+                if (IsSelf(candidate)) continue;
+
+                float y = groundBuffer[i].point.y;
+                if (y > best) best = y;
+            }
+
+            return best;
+        }
+
+        protected bool IsSelf(Collider candidate)
+        {
+            // Сравнение тел идёт только когда своё тело вообще есть: у врагов
+            // без Rigidbody selfBody пуст, и check "attachedRigidbody == selfBody"
+            // превращался в "null == null" — тогда «своими» оказывались ВСЕ
+            // статические коллайдеры без Rigidbody (земля, стены, машина), и
+            // запросы их молча пропускали. Из-за этого дрон не взрывался о
+            // препятствия в полёте смерти.
+            return candidate == null
+                || candidate.transform.IsChildOf(transform)
+                || (selfBody != null && candidate.attachedRigidbody == selfBody);
+        }
+
+        private Collider BlockingCollider
+        {
+            get
+            {
+                Collider found = lastSweepHit.collider;
+                return found != null ? found : overlapHit;
+            }
+        }
+
+        protected bool RepathExpired => Time.time >= repathTime;
+
+        /// <summary>Множитель зрения от кровавой луны (1, если событие неактивно).</summary>
+        protected static float BloodMoonVisionMultiplier =>
+            BloodMoonState.IsActive ? Mathf.Max(0.01f, BloodMoonState.EnemyVisionMultiplier) : 1f;
+
+        /// <summary>Множитель скорости от кровавой луны.</summary>
+        protected static float BloodMoonSpeedMultiplier =>
+            BloodMoonState.IsActive ? Mathf.Max(0.01f, BloodMoonState.EnemySpeedMultiplier) : 1f;
+
+        /// <summary>Множитель урона от кровавой луны.</summary>
+        protected static float BloodMoonDamageMultiplier =>
+            BloodMoonState.IsActive ? Mathf.Max(0.01f, BloodMoonState.EnemyDamageMultiplier) : 1f;
+
+        /// <summary>Множитель здоровья от кровавой луны (применяется один раз при спавне).</summary>
+        protected static float BloodMoonHealthMultiplier =>
+            BloodMoonState.IsActive ? Mathf.Max(0.01f, BloodMoonState.EnemyHealthMultiplier) : 1f;
+
+        protected static PlayerController FindPlayer()
+        {
+            PlayerController[] players = FindObjectsByType<PlayerController>(FindObjectsSortMode.None);
+            return players.Length > 0 ? players[0] : null;
+        }
+    }
+}
