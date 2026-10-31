@@ -81,10 +81,20 @@ namespace CarGame.Effects
         private void Awake()
         {
             lightSource = GetComponent<Light>();
+            if (lightSource == null) lightSource = GetComponentInChildren<Light>(true);
             neonRenderer = GetComponent<Renderer>();
+            if (neonRenderer == null) neonRenderer = GetComponentInChildren<Renderer>(true);
 
             float angle = Random.Range(0f, Mathf.PI * 2f);
             flareDirection = new Vector2(Mathf.Cos(angle), Mathf.Sin(angle));
+        }
+
+        private void Start()
+        {
+            if (lightSource == null) lightSource = GetComponent<Light>();
+            if (lightSource == null) lightSource = GetComponentInChildren<Light>(true);
+            if (neonRenderer == null) neonRenderer = GetComponent<Renderer>();
+            if (neonRenderer == null) neonRenderer = GetComponentInChildren<Renderer>(true);
         }
 
         private void OnEnable()
@@ -100,28 +110,89 @@ namespace CarGame.Effects
         /// <summary>Находит все источники света и неон и вешает на них метку блика.</summary>
         public static void CollectSceneSources()
         {
+            Renderer[] renderers = Object.FindObjectsByType<Renderer>(FindObjectsSortMode.None);
+            for (int i = 0; i < renderers.Length; i++)
+            {
+                Renderer renderer = renderers[i];
+                if (renderer == null || !UsesNeon(renderer)) continue;
+                if (renderer.GetComponentInParent<CarGame.Items.SpawnTerminal>() != null) continue;
+                if (renderer.GetComponentInParent<CarGame.Items.ShopTerminal>() != null) continue;
+                if (renderer.GetComponentInParent<CarGame.Items.SlotMachineTerminal>() != null) continue;
+                if (renderer.GetComponentInParent<CarGame.Items.ExchangerTerminal>() != null) continue;
+                if (renderer.GetComponentInParent<CarGame.Items.CraftingStation>() != null) continue;
+                if (renderer.GetComponent<LensFlareSource>() == null) renderer.gameObject.AddComponent<LensFlareSource>();
+            }
+
             Light[] lights = Object.FindObjectsByType<Light>(FindObjectsSortMode.None);
             for (int i = 0; i < lights.Length; i++)
             {
                 Light light = lights[i];
                 if (light == null || light.type == LightType.Directional) continue;
                 if (light.intensity <= 0.05f) continue;
+                if (!UsesNeonLight(light)) continue;
                 if (light.GetComponent<LensFlareSource>() == null) light.gameObject.AddComponent<LensFlareSource>();
             }
+        }
 
-            Renderer[] renderers = Object.FindObjectsByType<Renderer>(FindObjectsSortMode.None);
+        private static bool UsesNeonLight(Light light)
+        {
+            if (light.GetComponentInParent<CarGame.Items.SpawnTerminal>() != null) return false;
+            if (light.GetComponentInParent<CarGame.Items.ShopTerminal>() != null) return false;
+            if (light.GetComponentInParent<CarGame.Items.SlotMachineTerminal>() != null) return false;
+            if (light.GetComponentInParent<CarGame.Items.ExchangerTerminal>() != null) return false;
+            if (light.GetComponentInParent<CarGame.Items.CraftingStation>() != null) return false;
+            Renderer[] renderers = light.GetComponentsInChildren<Renderer>(true);
             for (int i = 0; i < renderers.Length; i++)
             {
-                Renderer renderer = renderers[i];
-                if (renderer == null || !UsesNeon(renderer)) continue;
-                if (renderer.GetComponent<LensFlareSource>() == null) renderer.gameObject.AddComponent<LensFlareSource>();
+                if (UsesNeon(renderers[i])) return true;
             }
+            // Не добавлять блики просто от света без неонового материала
+            return false;
         }
 
         private static bool UsesNeon(Renderer renderer)
         {
-            Material material = renderer.sharedMaterial;
-            return material != null && material.shader != null && material.shader.name == NeonShaderName;
+            if (renderer == null) return false;
+            Material[] materials = renderer.sharedMaterials;
+            for (int i = 0; i < materials.Length; i++)
+            {
+                Material material = materials[i];
+                if (material == null) continue;
+                if (material.shader != null && material.shader.name == NeonShaderName)
+                    return true;
+                if (!string.IsNullOrEmpty(material.name) && material.name.Contains("Neon"))
+                    return true;
+            }
+            return false;
+        }
+
+        /// <summary>Принудительно добавить источники блика на объект и всех потомков (для динамически созданных).</summary>
+        public static void EnsureSources(GameObject root)
+        {
+            if (root == null) return;
+
+            Renderer[] renderers = root.GetComponentsInChildren<Renderer>(true);
+            for (int i = 0; i < renderers.Length; i++)
+            {
+                Renderer renderer = renderers[i];
+                if (renderer == null || !UsesNeon(renderer)) continue;
+                if (renderer.GetComponentInParent<CarGame.Items.SpawnTerminal>() != null) continue;
+                if (renderer.GetComponentInParent<CarGame.Items.ShopTerminal>() != null) continue;
+                if (renderer.GetComponentInParent<CarGame.Items.SlotMachineTerminal>() != null) continue;
+                if (renderer.GetComponentInParent<CarGame.Items.ExchangerTerminal>() != null) continue;
+                if (renderer.GetComponentInParent<CarGame.Items.CraftingStation>() != null) continue;
+                if (renderer.GetComponent<LensFlareSource>() == null) renderer.gameObject.AddComponent<LensFlareSource>();
+            }
+
+            Light[] lights = root.GetComponentsInChildren<Light>(true);
+            for (int i = 0; i < lights.Length; i++)
+            {
+                Light light = lights[i];
+                if (light == null || light.type == LightType.Directional) continue;
+                if (light.intensity <= 0.05f) continue;
+                if (!UsesNeonLight(light)) continue;
+                if (light.GetComponent<LensFlareSource>() == null) light.gameObject.AddComponent<LensFlareSource>();
+            }
         }
 
         [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.AfterSceneLoad)]

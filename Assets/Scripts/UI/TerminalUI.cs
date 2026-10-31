@@ -89,7 +89,8 @@ namespace CarGame.UI
         private static readonly string[] AdminSectionNames =
         {
             "МОБЫ",
-            "ОБЪЕКТЫ"
+            "ОБЪЕКТЫ",
+            "АДМИНСКИЕ ИНСТРУМЕНТЫ"
         };
 
         private readonly List<Slot> slots = new List<Slot>();
@@ -465,6 +466,7 @@ namespace CarGame.UI
             {
                 case 0: return SpawnTerminal.TerminalCategory.Mobs;
                 case 1: return SpawnTerminal.TerminalCategory.Objects;
+                case 2: return SpawnTerminal.TerminalCategory.AdminTools;
                 default: return SpawnTerminal.TerminalCategory.Mobs;
             }
         }
@@ -688,6 +690,7 @@ namespace CarGame.UI
                 case SpawnTerminal.TerminalCategory.Craft: return "КРАФТ";
                 case SpawnTerminal.TerminalCategory.Mobs: return "МОБЫ";
                 case SpawnTerminal.TerminalCategory.Objects: return "ОБЪЕКТЫ";
+                case SpawnTerminal.TerminalCategory.AdminTools: return "АДМИНСКИЕ ИНСТРУМЕНТЫ";
                 default: return c.ToString();
             }
         }

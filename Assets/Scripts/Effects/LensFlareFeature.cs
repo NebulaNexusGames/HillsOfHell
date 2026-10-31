@@ -44,6 +44,7 @@ namespace CarGame.Effects
         {
             if (!RuntimeEnabled) return;
             if (flareMaterial == null) return;
+            LensFlareSource.CollectSceneSources();
             if (LensFlareSource.Active.Count == 0) return;
 
             if (renderingData.cameraData.cameraType == CameraType.Preview

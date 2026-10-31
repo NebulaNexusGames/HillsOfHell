@@ -201,6 +201,7 @@ public const string WrenchId = "wrench";
         public const string CpuT2Id = "cpu_t2";
         public const string CpuT3Id = "cpu_t3";
         public const string GazId = "gaz";
+        public const string DelHammerId = "del_hammer";
 
         // Численные ID из префабов Assets/Prefabs/Items и из разметки руки в
         // сцене. Каждый предмет знает свой номер, чтобы и поднятый из мира
@@ -246,6 +247,9 @@ public const string WrenchId = "wrench";
         public const string CpuT3Number = "30";
         // Канистра с бензином. Номер 31 свободен; её префаб в мире — Gaz.prefab.
         public const string GazNumber = "31";
+        // Дел-хаммер: числовой ID — 40. Именно он в префабах и в разметке
+        // руки в сцене (handVariants → itemId: 40) помечает этот предмет.
+        public const string DelHammerNumber = "40";
         // Кубы для спавна мобов. Номера из префабов DronCube/DinaBotCube/SwordBotCube.
         public const string SwordBotCubeId = "sword_bot_cube";
         public const string DinaBotCubeId = "dina_bot_cube";
@@ -305,6 +309,11 @@ public const string WrenchId = "wrench";
         public static readonly ItemDef Wrench = new ItemDef(WrenchId, "Wrench", ItemCategory.Tool, 1, new Color(0.55f, 0.6f, 0.66f), 2.6f, 5)
         {
             RussianName = "Гаечный ключ"
+        };
+
+        public static readonly ItemDef DelHammer = new ItemDef(DelHammerId, "Del Hammer", ItemCategory.Tool, 1, new Color(0.8f, 0.3f, 0.3f), 3.0f, 0)
+        {
+            RussianName = "Дел-хаммер"
         };
 
         /// <summary>
@@ -525,7 +534,7 @@ public const string WrenchId = "wrench";
 
         private static readonly ItemDef[] All =
         {
-            Scrap, Metal, Platinum, Pistol, Shotgun, PistolAmmo, ShotgunAmmo, Wrench, Injector, EnergyDrink, Beer, GoldenBolt, Lemon, WoodenPlank,
+            Scrap, Metal, Platinum, Pistol, Shotgun, PistolAmmo, ShotgunAmmo, Wrench, DelHammer, Injector, EnergyDrink, Beer, GoldenBolt, Lemon, WoodenPlank,
             ShieldScrap, ShieldIron, ShieldPlatinum, TurretScrap, TurretIron, TurretPlatinum, RamScrap, RamIron, RamPlatinum, Ram, Flashlight, ShakeLight,
             CpuT1, CpuT2, CpuT3, Gaz, SwordBotCube, DinaBotCube, DronCube,
             ShopTerminal, ExchangerTerminal, SlotMachineTerminal, Car, CraftingStation
@@ -550,6 +559,7 @@ public const string WrenchId = "wrench";
         static ItemDefs()
         {
             Register(Wrench, WrenchNumber);
+            Register(DelHammer, DelHammerNumber);
             Register(Scrap, ScrapNumber);
             Register(Metal, MetalNumber);
             Register(Platinum, PlatinumNumber);

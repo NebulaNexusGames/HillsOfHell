@@ -354,7 +354,7 @@ namespace CarGame.Player
             if (source == null) return null;
 
             IHandUsable found = source.GetComponent<IHandUsable>();
-            if (found == null) found = source.GetComponentInChildren<IHandUsable>();
+            if (found == null) found = source.GetComponentInChildren<IHandUsable>(true);
             return found;
         }
 

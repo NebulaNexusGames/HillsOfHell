@@ -88,7 +88,7 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 025241435ad626d43a86a5ca7479bd6c, type: 3}
   m_Name: PSXPostFXFeature
   m_EditorClassIdentifier: 
-  m_Active: 1
+  m_Active: 0
   psxMaterial: {fileID: 2100000, guid: efde91af432f52744b3bf8b4f110ff0f, type: 2}
   vhsMaterial: {fileID: 2100000, guid: 1fa05eded17b04e43ae03c6ce38af208, type: 2}
   vhsEnabled: 0

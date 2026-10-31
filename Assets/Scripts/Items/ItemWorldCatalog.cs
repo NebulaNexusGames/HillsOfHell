@@ -104,6 +104,7 @@ namespace CarGame.Items
             TryAutoAdd(ItemDefs.SlotMachineTerminalId, "SlotMachineTerminal");
             TryAutoAdd(ItemDefs.CarId, "Car");
             TryAutoAdd(ItemDefs.CraftingStationId, "CraftingStation");
+            TryAutoAdd(ItemDefs.DelHammerId, "DelHammer");
         }
 
         private void TryAutoAdd(string itemId, string prefabName)
@@ -216,7 +217,20 @@ namespace CarGame.Items
             for (int i = 0; i < sourceTransform.childCount; i++)
             {
                 Transform child = sourceTransform.GetChild(i);
-                if (child.GetComponentInChildren<Renderer>(true) != null) moving.Add(child);
+                if (child.GetComponentInChildren<Renderer>(true) != null || child.GetComponent<Renderer>() != null) moving.Add(child);
+            }
+
+            // Если корневые объекты без рендера не нашли, взять все дочерние с рендером в иерархии
+            if (moving.Count == 0)
+            {
+                Renderer[] allRends = sourceTransform.GetComponentsInChildren<Renderer>(true);
+                HashSet<Transform> seen = new HashSet<Transform>();
+                for (int i = 0; i < allRends.Length; i++)
+                {
+                    Transform t = allRends[i].transform;
+                    while (t.parent != null && t.parent != sourceTransform) t = t.parent;
+                    if (t.parent == sourceTransform && seen.Add(t)) moving.Add(t);
+                }
             }
 
             if (moving.Count == 0) return false;
@@ -310,16 +324,30 @@ namespace CarGame.Items
 
             if (spawned.GetComponentInChildren<Collider>(true) == null) AddColliderFromBounds(spawned);
 
+            CarGame.Effects.LensFlareSource.EnsureSources(spawned);
+
             PickupItem pickup = spawned.GetComponent<PickupItem>();
             if (pickup == null) pickup = spawned.AddComponent<PickupItem>();
 
-            pickup.SetItemId(def != null ? def.Id : string.Empty);
+            if (def != null)
+            {
+                pickup.SetItemId(def.Id);
+                pickup.SetItem(def);
+            }
             pickup.SetStackAmount(Mathf.Max(1, amount));
             pickup.SetPayload(payload);
 
             // Кто бросил: предмет не должен ударить его же сразу после вылета.
             ThrownItemDamage impact = spawned.GetComponent<ThrownItemDamage>();
             if (impact != null) impact.SetThrower(thrower);
+
+            // Убедимся, что у предмета из префаба правильный itemId
+            if (pickup != null && def != null)
+            {
+                if (string.IsNullOrEmpty(pickup.ItemId) || pickup.ItemId != def.Id)
+                    pickup.SetItemId(def.Id);
+                pickup.SetItem(def);
+            }
 
             body.linearVelocity = velocity;
             body.angularVelocity = Vector3.zero;
@@ -356,6 +384,8 @@ namespace CarGame.Items
                 if (behaviour is CarGame.Items.GasCanItem) continue;
                 if (behaviour is SpawnCubeItem) continue;
                 if (behaviour is SpawnCubeProjectile) continue;
+                if (behaviour is DelHammerItem) continue;
+                if (behaviour is IHandUsable) continue;
                 behaviour.enabled = false;
             }
 

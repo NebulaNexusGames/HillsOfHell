@@ -23,7 +23,8 @@ namespace CarGame.Items
             Building,
             Craft,
             Mobs,
-            Objects
+            Objects,
+            AdminTools
         }
 
         [Serializable]
@@ -172,6 +173,13 @@ namespace CarGame.Items
             {
                 category = TerminalCategory.Objects,
                 items = GetByIds(ItemDefs.ShopTerminalId, ItemDefs.SlotMachineTerminalId, ItemDefs.ExchangerTerminalId, ItemDefs.CarId, ItemDefs.CraftingStationId)
+            });
+
+            // Админ: инструменты
+            list.Add(new CategoryEntry
+            {
+                category = TerminalCategory.AdminTools,
+                items = GetByIds(ItemDefs.DelHammerId)
             });
             list.Add(new CategoryEntry { category = TerminalCategory.All, items = GetByIds(ItemDefs.WrenchId, ItemDefs.PistolId, ItemDefs.ShotgunId, ItemDefs.LemonId, ItemDefs.InjectorId, ItemDefs.PistolAmmoId, ItemDefs.ShotgunAmmoId, ItemDefs.TurretScrapId, ItemDefs.TurretIronId, ItemDefs.TurretPlatinumId, ItemDefs.ShieldScrapId, ItemDefs.ShieldIronId, ItemDefs.ShieldPlatinumId, ItemDefs.RamScrapId, ItemDefs.RamIronId, ItemDefs.RamPlatinumId, ItemDefs.GoldenBoltId, ItemDefs.WoodenPlankId, ItemDefs.ScrapId, ItemDefs.MetalId, ItemDefs.PlatinumId, ItemDefs.CpuT1Id, ItemDefs.CpuT2Id, ItemDefs.CpuT3Id, ItemDefs.SwordBotCubeId, ItemDefs.DinaBotCubeId, ItemDefs.DronCubeId, ItemDefs.ShopTerminalId, ItemDefs.ExchangerTerminalId, ItemDefs.SlotMachineTerminalId, ItemDefs.CarId, ItemDefs.CraftingStationId) });
             categories = list.ToArray();

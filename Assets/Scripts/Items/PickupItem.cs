@@ -50,6 +50,12 @@ namespace CarGame.Items
             itemId = value ?? string.Empty;
         }
 
+        public void SetItem(ItemDef def)
+        {
+            if (def == null) return;
+            itemId = def.Id ?? string.Empty;
+        }
+
         public void SetStackAmount(int value)
         {
             stackAmount = Mathf.Max(1, value);
