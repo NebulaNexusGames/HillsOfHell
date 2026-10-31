@@ -57268,20 +57268,24 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: b7bdda2dc58700a4f80582a4ac245434, type: 3}
   m_Name: 
   m_EditorClassIdentifier: 
+  scriptVersion: 1.3.0
   hitRange: 3.5
   hitStartOffset: 0.4
   hitMask:
     serializedVersion: 2
     m_Bits: 4294967295
-  swingCooldown: 0.6
   animator: {fileID: 0}
   hitTrigger: Hit
   idleParameter: Idle
+  swingStateName: Hit
+  maxSwingBlockSeconds: 2
+  hitMomentNormalizedTime: 0.55
+  deleteDelayAfterHit: 0.12
+  swingClipLength: 1.1667
   hitClip: {fileID: 0}
   whiffClip: {fileID: 0}
   volume: 0.9
   pitchJitter: 0.1
-  deleteDelay: 0.25
 --- !u!1 &812285357374146846
 GameObject:
   m_ObjectHideFlags: 0
