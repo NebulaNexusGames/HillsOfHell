@@ -140,13 +140,133 @@ namespace CarGame.UI
         public static bool IsOpen => Instance != null && Instance.visible;
         public static bool AimingSlot => Instance != null && Instance.aiming;
 
+        // Настройки панели, какие они в файле сцены (настрока автора).
+        // При перезапуске игры (главное меню / смерть) старая панель уничтожена и
+        // Show() пересоздаёт её кодом — такие «самозванцы» получают дефолтные
+        // значения полей C# (окно больше экрана, процедурная музыка вместо темы),
+        // а не то, что настроено в инспекторе сцены. Первый созданный кодом
+        // экземпляр фиксирует снимок своих полей (до любого кодового изменения)
+        // в статическом поле; все последующие пересоздания сбрасываются к нему.
+        [Serializable]
+        private struct PanelSnapshot
+        {
+            public float windowWidth;
+            public float windowHeight;
+            public int columns;
+            public AudioClip interfaceMusic;
+            public float musicVolume;
+            public bool loopMusic;
+            public float musicFade;
+            public string titleText;
+            public string normalText;
+            public string adminText;
+            public string backText;
+            public Color backdropColor;
+            public Color frameColor;
+            public Color hoverColor;
+            public Color textColor;
+            public Color titleColor;
+            public Color activeColor;
+            public Color arrowColor;
+            public bool showCaptions;
+            public float iconPadding;
+            public float iconScale;
+            public float captionRatio;
+            public float standOff;
+            public bool flipPanel;
+        }
+
+        private static PanelSnapshot sceneDefaults;
+        private static bool sceneDefaultsCaptured;
+
+        // Флаг: этот экземпляр создан кодом (Show), а не лежит в сцене. Такие
+        // панели обязаны выглядеть ровно как их прототип из проекта.
+        private bool createdAtRuntime;
+
         private void Awake()
         {
             if (Instance != null && Instance != this) { Destroy(this); return; }
             Instance = this;
+            if (createdByCodePending)
+            {
+                createdAtRuntime = true;
+                createdByCodePending = false;
+            }
+            if (createdAtRuntime) ApplySceneDefaults();
             frameColor = TerminalTheme.IdleCell;
             hoverColor = TerminalTheme.HoverCell;
             if (interfaceMusic == null && generatedMusic == null) generatedMusic = ProceduralAudio.TerminalLoop();
+        }
+
+        // Мост между Show() и Awake(): AddComponent вызывает Awake немедленно,
+        // поэтому сигнал о «ручном» создании передаём статическим флагом.
+        private static bool createdByCodePending;
+
+        /// <summary>Сбросить панель к эталону из проекта (см. EnsureSceneDefaults).</summary>
+        private void ApplySceneDefaults()
+        {
+            if (!sceneDefaultsCaptured)
+            {
+                // Эталон ещё не зафиксирован: первый созданный кодом экземпляр
+                // снимает свои значения (они равны инициализаторам полей/префабу).
+                sceneDefaultsCaptured = true;
+                sceneDefaults = new PanelSnapshot
+                {
+                    windowWidth = windowWidth,
+                    windowHeight = windowHeight,
+                    columns = columns,
+                    interfaceMusic = interfaceMusic,
+                    musicVolume = musicVolume,
+                    loopMusic = loopMusic,
+                    musicFade = musicFade,
+                    titleText = titleText,
+                    normalText = normalText,
+                    adminText = adminText,
+                    backText = backText,
+                    backdropColor = backdropColor,
+                    frameColor = frameColor,
+                    hoverColor = hoverColor,
+                    textColor = textColor,
+                    titleColor = titleColor,
+                    activeColor = activeColor,
+                    arrowColor = arrowColor,
+                    showCaptions = showCaptions,
+                    iconPadding = iconPadding,
+                    iconScale = iconScale,
+                    captionRatio = captionRatio,
+                    standOff = standOff,
+                    flipPanel = flipPanel,
+                };
+                return;
+            }
+            PanelSnapshot d = sceneDefaults;
+            windowWidth = d.windowWidth;
+            windowHeight = d.windowHeight;
+            columns = d.columns;
+            interfaceMusic = d.interfaceMusic;
+            musicVolume = d.musicVolume;
+            loopMusic = d.loopMusic;
+            musicFade = d.musicFade;
+            titleText = d.titleText;
+            normalText = d.normalText;
+            adminText = d.adminText;
+            backText = d.backText;
+            backdropColor = d.backdropColor;
+            frameColor = d.frameColor;
+            hoverColor = d.hoverColor;
+            textColor = d.textColor;
+            titleColor = d.titleColor;
+            activeColor = d.activeColor;
+            arrowColor = d.arrowColor;
+            showCaptions = d.showCaptions;
+            iconPadding = d.iconPadding;
+            iconScale = d.iconScale;
+            captionRatio = d.captionRatio;
+            standOff = d.standOff;
+            flipPanel = d.flipPanel;
+            // Предустановленная тема не задана в проекте — только тогда допустима
+            // процедурная генерация; иначе панель обязана играть клип автора.
+            if (interfaceMusic != null) generatedMusic = null;
         }
 
         public static TerminalUI Show(SpawnTerminal owner)
@@ -156,7 +276,12 @@ namespace CarGame.UI
             {
                 GameObject go = new GameObject("TerminalUI");
                 if (owner != null) go.transform.SetParent(owner.transform, false);
+                // Сигнал для Awake(): панель создана кодом (например, после
+                // рестарта игры из главного меню или после смерти) — при
+                // создании она обязана сброситься к виду из проекта.
+                createdByCodePending = true;
                 view = go.AddComponent<TerminalUI>();
+                createdByCodePending = false;
             }
             else if (owner != null)
             {
