@@ -10,7 +10,7 @@ namespace CarGame.Items
     {
         [Header("Версия скрипта")]
         [Tooltip("Текущая версия скрипта молота. Обновляется при каждом изменении логики.")]
-        [SerializeField] private string scriptVersion = "1.3.0";
+        [SerializeField] private string scriptVersion = "1.3.1";
 
         [Header("Удар")]
         [SerializeField] private float hitRange = 3.5f;
@@ -20,11 +20,13 @@ namespace CarGame.Items
         [Header("Анимация")]
         [SerializeField] private Animator animator;
         [SerializeField] private string hitTrigger = "Hit";
-        [SerializeField] private string idleParameter = "Idle";
         [Tooltip("Имя состояния удара в Animator-контроллере. Пока это состояние " +
                  "активно, повторный ЛКМ игнорируется: анимация никогда не " +
                  "прерывается, но и второй удар до её окончания невозможен. КД нет.")]
         [SerializeField] private string swingStateName = "Hit";
+        [Tooltip("Имя состояния покоя в Animator-контроллере. Используется для " +
+                 "принудительного возврата из залипшего удара при экипировке.")]
+        [SerializeField] private string idleStateName = "Idle";
         [Tooltip("Страховка на случай, если аниматор почему-то завис в состоянии " +
                  "удара (потеря фокуса, выключенный объект). Не является КД: " +
                  "обычно удар блокируется ровно на длительность анимации.")]
@@ -99,8 +101,11 @@ namespace CarGame.Items
         public void OnEquipped(PlayerHand hand)
         {
             ResolveAnimator(hand);
-            if (activeAnimator != null && !string.IsNullOrEmpty(idleParameter))
-                activeAnimator.SetBool(idleParameter, true);
+            // Принудительный возврат в Idle при экипировке: если молот
+            // убирают и достают посреди замаха, аниматор не должен остаться
+            // на последнем кадре Hit. Триггер Hit при этом сбрасывается,
+            // чтобы он не «выстрелил» сам сразу после экипировки.
+            ResetSwingAnimation();
         }
 
         private bool CanUse(PlayerHand hand)
@@ -177,6 +182,16 @@ namespace CarGame.Items
                 return false;
             }
 
+            // Страховка сработала (например, объект руки выключали посреди
+            // замаха): чистим залипший триггер и возвращаем модель в покой,
+            // иначе следующий удар мог бы не проиграться.
+            if (Time.time - swingStartedTime > maxSwingBlockSeconds * 0.5f && IsInSwingState(anim))
+            {
+                ResetSwingAnimation();
+                swinging = false;
+                return false;
+            }
+
             AnimatorStateInfo state = anim.GetCurrentAnimatorStateInfo(0);
             if (state.IsName(swingStateName))
             {
@@ -187,6 +202,12 @@ namespace CarGame.Items
             // Мы уже вышли из состояния удара — блокировка снята.
             swinging = false;
             return false;
+        }
+
+        private bool IsInSwingState(Animator anim)
+        {
+            if (anim == null || anim.layerCount <= 0) return false;
+            return anim.GetCurrentAnimatorStateInfo(0).IsName(swingStateName);
         }
 
         private void BeginSwingBlock()
@@ -316,9 +337,41 @@ namespace CarGame.Items
 
         private void PlaySwingAnimation()
         {
-            if (activeAnimator == null) return;
-            if (!string.IsNullOrEmpty(hitTrigger)) activeAnimator.SetTrigger(hitTrigger);
-            if (!string.IsNullOrEmpty(idleParameter)) activeAnimator.SetBool(idleParameter, false);
+            Animator anim = activeAnimator;
+            if (anim == null) return;
+
+            // Сначала сбрасываем триггер: залипший (непотреблённый) Hit
+            // ломает переходы — состояние удара может застрять на последнем
+            // кадре и не вернуться в Idle, а следующий ЛКМ не сыграл бы
+            // анимацию. Затем ставим заново — переход Idle -> Hit срабатывает
+            // немедленно (HasExitTime у него выключен).
+            if (!string.IsNullOrEmpty(hitTrigger))
+            {
+                anim.ResetTrigger(hitTrigger);
+                anim.SetTrigger(hitTrigger);
+            }
+        }
+
+        /// <summary>
+        /// Возврат анимации в покой без ожидания перехода: чистим триггер Hit
+        /// (залипший непотреблённый триггер ломает следующие удары) и
+        /// принудительно играем состояние Idle. Используется при экипировке
+        /// и как страховка от зависшего аниматора.
+        /// </summary>
+        private void ResetSwingAnimation()
+        {
+            Animator anim = activeAnimator;
+            if (anim == null) return;
+
+            if (!string.IsNullOrEmpty(hitTrigger)) anim.ResetTrigger(hitTrigger);
+
+            if (!string.IsNullOrEmpty(idleStateName))
+            {
+                // Принудительный переход в Idle: если мы уже там — это почти
+                // ничего не меняет, а если аниматор залип на последнем кадре
+                // удара (или в переходе), модель гарантированно вернётся в покой.
+                anim.Play(idleStateName);
+            }
         }
 
         private void PlayHit()

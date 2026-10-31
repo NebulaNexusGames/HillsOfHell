@@ -57268,7 +57268,7 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: b7bdda2dc58700a4f80582a4ac245434, type: 3}
   m_Name: 
   m_EditorClassIdentifier: 
-  scriptVersion: 1.3.0
+  scriptVersion: 1.3.1
   hitRange: 3.5
   hitStartOffset: 0.4
   hitMask:
@@ -57276,8 +57276,8 @@ MonoBehaviour:
     m_Bits: 4294967295
   animator: {fileID: 0}
   hitTrigger: Hit
-  idleParameter: Idle
   swingStateName: Hit
+  idleStateName: Idle
   maxSwingBlockSeconds: 2
   hitMomentNormalizedTime: 0.55
   deleteDelayAfterHit: 0.12
