@@ -181,11 +181,16 @@ namespace CarGame.Game
                 if (mb is SceneResetter) continue;        // сам хост не трогаем
                 System.Type type = mb.GetType();
                 string key = type.FullName;
-                if (!capturedTypes.TryGetValue(key, out int idx))
+                if (!capturedTypes.TryGetValue(key, out System.Type knownType))
+                {
+                    knownType = type;
+                    capturedTypes[key] = knownType;
+                }
+                int idx = typeList.IndexOf(knownType);
+                if (idx < 0)
                 {
                     idx = typeList.Count;
-                    capturedTypes[key] = idx;
-                    typeList.Add(type);
+                    typeList.Add(knownType);
                 }
                 comps.Add(new ComponentSnap
                 {
