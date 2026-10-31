@@ -1,3 +1,4 @@
+using System;
 using System.Collections;
 using System.Collections.Generic;
 using CarGame.Audio;
@@ -182,6 +183,48 @@ namespace CarGame.UI
         // Флаг: этот экземпляр создан кодом (Show), а не лежит в сцене. Такие
         // панели обязаны выглядеть ровно как их прототип из проекта.
         private bool createdAtRuntime;
+
+        /// <summary>
+        /// Снимает эталон настроек панели с первого экземпляра, загруженного из
+        /// файла сцены Unity (т.е. именно таким, каким его настроил автор в
+        /// инспекторе). Вызывается один раз за игру из SceneResetter до того,
+        /// как код успеет что-либо изменить. Все последующие пересоздания панели
+        /// после рестарта сцены сбрасываются к этому эталону.
+        /// </summary>
+        public static void CaptureFromSceneObject()
+        {
+            TerminalUI view = Instance;
+            if (view == null || view.createdAtRuntime) return; // эталон снимается только со сценного объекта
+            if (sceneDefaultsCaptured) return;
+            sceneDefaultsCaptured = true;
+            sceneDefaults = new PanelSnapshot
+            {
+                windowWidth = view.windowWidth,
+                windowHeight = view.windowHeight,
+                columns = view.columns,
+                interfaceMusic = view.interfaceMusic,
+                musicVolume = view.musicVolume,
+                loopMusic = view.loopMusic,
+                musicFade = view.musicFade,
+                titleText = view.titleText,
+                normalText = view.normalText,
+                adminText = view.adminText,
+                backText = view.backText,
+                backdropColor = view.backdropColor,
+                frameColor = view.frameColor,
+                hoverColor = view.hoverColor,
+                textColor = view.textColor,
+                titleColor = view.titleColor,
+                activeColor = view.activeColor,
+                arrowColor = view.arrowColor,
+                showCaptions = view.showCaptions,
+                iconPadding = view.iconPadding,
+                iconScale = view.iconScale,
+                captionRatio = view.captionRatio,
+                standOff = view.standOff,
+                flipPanel = view.flipPanel,
+            };
+        }
 
         private void Awake()
         {
