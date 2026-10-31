@@ -180,6 +180,19 @@ namespace CarGame.UI
         private static PanelSnapshot sceneDefaults;
         private static bool sceneDefaultsCaptured;
 
+        /// <summary>
+        /// Разрешает переснять эталон панели. Вызывается из SceneResetter при
+        /// каждой новой загрузке сцены: статические поля переживают
+        /// SceneManager.LoadScene, и без сброса этого флага эталон навсегда
+        /// остался бы снятым с первого запуска (в т.ч. с созданного кодом
+        /// экземпляра), а панель после рестарта выглядела бы не так, как в
+        /// проекте.
+        /// </summary>
+        public static void AllowRebase()
+        {
+            sceneDefaultsCaptured = false;
+        }
+
         // Флаг: этот экземпляр создан кодом (Show), а не лежит в сцене. Такие
         // панели обязаны выглядеть ровно как их прототип из проекта.
         private bool createdAtRuntime;
