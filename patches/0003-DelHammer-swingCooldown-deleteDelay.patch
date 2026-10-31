@@ -1,0 +1,187 @@
+From 3883abd9bc43f352e351ec3f44246ee7cf954ab1 Mon Sep 17 00:00:00 2001
+From: "qwen.ai[bot]" <qwenlm-intl@service.alibaba.com>
+Date: Sat, 31 Oct 2026 14:59:43 +0000
+Subject: [PATCH 3/4] =?UTF-8?q?DelHammer:=20=D1=83=D0=B1=D1=80=D0=B0=D0=BD?=
+ =?UTF-8?q?=20=D0=9A=D0=94,=20=D1=83=D0=B4=D0=B0=D1=80=20=D0=B1=D0=BB?=
+ =?UTF-8?q?=D0=BE=D0=BA=D0=B8=D1=80=D1=83=D0=B5=D1=82=D1=81=D1=8F=20=D1=82?=
+ =?UTF-8?q?=D0=BE=D0=BB=D1=8C=D0=BA=D0=BE=20=D0=B8=D0=B4=D1=83=D1=89=D0=B5?=
+ =?UTF-8?q?=D0=B9=20=D0=B0=D0=BD=D0=B8=D0=BC=D0=B0=D1=86=D0=B8=D0=B5=D0=B9?=
+ =?UTF-8?q?=20(=D0=9B=D0=9A=D0=9C=20=D0=B2=D1=81=D0=B5=D0=B3=D0=B4=D0=B0?=
+ =?UTF-8?q?=20=D0=B7=D0=B0=D0=BF=D1=83=D1=81=D0=BA=D0=B0=D0=B5=D1=82=20?=
+ =?UTF-8?q?=D1=83=D0=B4=D0=B0=D1=80,=20=D0=B2=D1=82=D0=BE=D1=80=D0=BE?=
+ =?UTF-8?q?=D0=B9=20=D1=83=D0=B4=D0=B0=D1=80=20=E2=80=94=20=D0=BF=D0=BE?=
+ =?UTF-8?q?=D1=81=D0=BB=D0=B5=20=D0=BE=D0=BA=D0=BE=D0=BD=D1=87=D0=B0=D0=BD?=
+ =?UTF-8?q?=D0=B8=D1=8F=20=D0=B0=D0=BD=D0=B8=D0=BC=D0=B0=D1=86=D0=B8=D0=B8?=
+ =?UTF-8?q?);=20=D1=83=D0=B4=D0=B0=D0=BB=D0=B5=D0=BD=D1=8B=20swingCooldown?=
+ =?UTF-8?q?/deleteDelay,=20=D0=BE=D0=B1=D0=BD=D0=BE=D0=B2=D0=BB=D0=B5?=
+ =?UTF-8?q?=D0=BD=D1=8B=20=D1=81=D0=B5=D1=80=D0=B8=D0=B0=D0=BB=D0=B8=D0=B7?=
+ =?UTF-8?q?=D0=BE=D0=B2=D0=B0=D0=BD=D0=BD=D1=8B=D0=B5=20=D0=BF=D0=BE=D0=BB?=
+ =?UTF-8?q?=D1=8F=20=D0=B2=20=D1=81=D1=86=D0=B5=D0=BD=D0=B5?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+---
+ Assets/Scenes/SampleScene.unity       |  7 ++-
+ Assets/Scripts/Items/DelHammerItem.cs | 71 ++++++++++++++++++++++++---
+ 2 files changed, 68 insertions(+), 10 deletions(-)
+
+diff --git a/Assets/Scenes/SampleScene.unity b/Assets/Scenes/SampleScene.unity
+index eebef81..b548aba 100644
+--- a/Assets/Scenes/SampleScene.unity
++++ b/Assets/Scenes/SampleScene.unity
+@@ -57273,15 +57273,18 @@ MonoBehaviour:
+   hitMask:
+     serializedVersion: 2
+     m_Bits: 4294967295
+-  swingCooldown: 0.6
+   animator: {fileID: 0}
+   hitTrigger: Hit
+   idleParameter: Idle
++  swingStateName: Hit
++  maxSwingBlockSeconds: 2
++  hitMomentNormalizedTime: 0.55
++  deleteDelayAfterHit: 0.12
++  swingClipLength: 1.1667
+   hitClip: {fileID: 0}
+   whiffClip: {fileID: 0}
+   volume: 0.9
+   pitchJitter: 0.1
+-  deleteDelay: 0.25
+ --- !u!1 &812285357374146846
+ GameObject:
+   m_ObjectHideFlags: 0
+diff --git a/Assets/Scripts/Items/DelHammerItem.cs b/Assets/Scripts/Items/DelHammerItem.cs
+index 16053da..1683d37 100644
+--- a/Assets/Scripts/Items/DelHammerItem.cs
++++ b/Assets/Scripts/Items/DelHammerItem.cs
+@@ -12,19 +12,25 @@ namespace CarGame.Items
+         [SerializeField] private float hitRange = 3.5f;
+         [SerializeField] private float hitStartOffset = 0.4f;
+         [SerializeField] private LayerMask hitMask = ~0;
+-        [SerializeField] private float swingCooldown = 0.6f;
+-        [SerializeField] private float deleteDelay = 0.25f;
+ 
+         [Header("Анимация")]
+         [SerializeField] private Animator animator;
+         [SerializeField] private string hitTrigger = "Hit";
+         [SerializeField] private string idleParameter = "Idle";
++        [Tooltip("Имя состояния удара в Animator-контроллере. Пока это состояние " +
++                 "активно, повторный ЛКМ игнорируется: анимация никогда не " +
++                 "прерывается, но и второй удар до её окончания невозможен. КД нет.")]
++        [SerializeField] private string swingStateName = "Hit";
++        [Tooltip("Страховка на случай, если аниматор почему-то завис в состоянии " +
++                 "удара (потеря фокуса, выключенный объект). Не является КД: " +
++                 "обычно удар блокируется ровно на длительность анимации.")]
++        [SerializeField] private float maxSwingBlockSeconds = 2f;
+ 
+         [Header("Удаление по анимации")]
+         [Tooltip("Доля клика удара (0..1), на которой засчитывается попадание. " +
+                  "Таймер удаления запускается именно в момент замаха, а объект " +
+-                 "исчезает через deleteDelay после этого момента — так удаление " +
+-                 "не выглядит ни раньше, ни позже удара молотка")]
++                 "исчезает через deleteDelayAfterHit после этого момента — так " +
++                 "удаление не выглядит ни раньше, ни позже удара молотка")]
+         [SerializeField, Range(0f, 1f)] private float hitMomentNormalizedTime = 0.55f;
+         [Tooltip("Сколько секунд ждать исчезновения объекта после момента удара в анимации, с")]
+         [SerializeField] private float deleteDelayAfterHit = 0.12f;
+@@ -46,9 +52,10 @@ namespace CarGame.Items
+         private PlayerHand currentHand;
+         private AudioClip generatedHitClip;
+         private AudioClip generatedWhiffClip;
+-        private float nextSwingTime;
+         private bool warnedAboutAnimator;
+         private Coroutine pendingDelete;
++        private bool swinging;
++        private float swingStartedTime;
+ 
+         private void Awake()
+         {
+@@ -61,11 +68,14 @@ namespace CarGame.Items
+         public void OnUsePressed(PlayerHand hand)
+         {
+             currentHand = hand;
+-            if (!CanUse(hand) || Time.time < nextSwingTime) return;
++            if (!CanUse(hand)) return;
++
++            // КД у молотка нет. Единственная блокировка — пока анимация удара
++            // ещё играется, второй удар невозможен (анимация не прерывается).
++            if (IsSwingActive()) return;
+ 
+             ResolveAnimator(hand);
+             Swing(hand);
+-            nextSwingTime = Time.time + swingCooldown;
+         }
+ 
+         public void OnUseHeld(PlayerHand hand)
+@@ -101,6 +111,7 @@ namespace CarGame.Items
+         {
+             ResolveAnimator(hand);
+             PlaySwingAnimation();
++            BeginSwingBlock();
+ 
+             if (!TryGetAimRay(hand, out Ray ray))
+             {
+@@ -136,6 +147,50 @@ namespace CarGame.Items
+             PlayWhiff();
+         }
+ 
++        /// <summary>
++        /// Блокировка повторного удара на время анимации. Считается ли удар
++        /// ещё идущим по состоянию Animator'а: пока активно состояние «Hit»
++        /// (или переход в него/из него) — второй ЛКМ игнорируется. Анимация
++        /// при этом никогда не прерывается. КД нет; maxSwingBlockSeconds —
++        /// лишь страховка от зависшего аниматора.
++        /// </summary>
++        private bool IsSwingActive()
++        {
++            if (!swinging) return false;
++
++            // Страховка: если аниматор вдруг потерялся или завис, блокировка
++            // сама по себе истечёт. В норме удар длится ровно анимацию.
++            if (Time.time - swingStartedTime > maxSwingBlockSeconds)
++            {
++                swinging = false;
++                return false;
++            }
++
++            Animator anim = activeAnimator;
++            if (anim == null || !anim.isActiveAndEnabled)
++            {
++                swinging = false;
++                return false;
++            }
++
++            AnimatorStateInfo state = anim.GetCurrentAnimatorStateInfo(0);
++            if (state.IsName(swingStateName))
++            {
++                // Удар ещё играется (включая переход обратно в Idle).
++                return true;
++            }
++
++            // Мы уже вышли из состояния удара — блокировка снята.
++            swinging = false;
++            return false;
++        }
++
++        private void BeginSwingBlock()
++        {
++            swinging = true;
++            swingStartedTime = Time.time;
++        }
++
+         /// <summary>
+         /// Ставит удаление в очередь: объект исчезнет не сразу, а после того
+         /// как анимация замахa дойдёт до момента удара (hitMoment) плюс
+@@ -145,7 +200,7 @@ namespace CarGame.Items
+         private void ScheduleDelete(GameObject target)
+         {
+             float hitMoment = GetSwingHitMoment();
+-            float delay = Mathf.Max(0f, deleteDelay) + hitMoment + Mathf.Max(0f, deleteDelayAfterHit);
++            float delay = hitMoment + Mathf.Max(0f, deleteDelayAfterHit);
+ 
+             if (pendingDelete != null) StopCoroutine(pendingDelete);
+             pendingDelete = StartCoroutine(DeleteAfterDelay(target, delay));
+-- 
+2.39.5
+
