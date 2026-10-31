@@ -1,0 +1,216 @@
+diff --git a/Assets/Scripts/Game/SceneResetter.cs b/Assets/Scripts/Game/SceneResetter.cs
+index 6fe68c0..61f98a4 100644
+--- a/Assets/Scripts/Game/SceneResetter.cs
++++ b/Assets/Scripts/Game/SceneResetter.cs
+@@ -6,31 +6,36 @@ using UnityEngine.SceneManagement;
+ namespace CarGame.Game
+ {
+     /// <summary>
+-    /// Глобальный сброс состояния игры к «заводским» значениям из файла сцены.
++    /// Глобальный сброс состояния игры к «первозданному играбельному состоянию» —
++    /// тому, в котором сцена оказывается при ПЕРВОМ ЗАПУСКЕ ИГРЫ.
+     ///
+     /// Смерть в игре фатальна и обнуляет прогресс забега, поэтому после любой
+     /// смены сцены (главное меню -> игра, экран смерти -> игра) всё, что было
+-    /// изменено во время предыдущего забега, обязано вернуться к состоянию,
+-    /// которое автор проекта сохранил в Unity.
++    /// изменено во время предыдущего забега, обязано вернуться к состоянию
++    /// первого запуска.
++    ///
++    /// Ключевое отличие от простого отката к файлу сцены: снимок снимается НЕ в
++    /// момент sceneLoaded (когда объекты ещё «сырые», как в редакторе), а в
++    /// конце первого кадра — когда уже отработали все Awake()/Start() игровых
++    /// скриптов. То есть эталон включает всю стартовую логику: заспавненные
++    /// кодом предметы, построенные интерфейсы, корректные размеры окон,
++    /// выбранные темы терминалов и т. п. Именно эту картину игрок видит при
++    /// свежем запуске — к ней и возвращается сцена после рестарта.
+     ///
+     /// Как это работает:
+-    /// 1. При первой загрузке игровой сцены Unity восстанавливает объекты ровно
+-    ///    так, как они сохранены в .unity-файле. В этот момент снимается полный
+-    ///    снимок сцены: позиция, rotation, scale, активность каждого GameObject
+-    ///    и сериализуемые поля всех MonoBehaviour — то есть именно те значения,
+-    ///    что видны в инспекторе.
++    /// 1. Первая загрузка игровой сцены за запуск приложения: ждём конец кадра
++    ///    (все Start'ы выполнены) и снимаем полный снимок: позиция, rotation,
++    ///    scale, активность каждого GameObject и сериализуемые поля всех
++    ///    MonoBehaviour — включая объекты, созданные кодом на старте.
+     /// 2. Снимок хранится в нестатическом поле хост-объекта с DontDestroyOnLoad.
+-    ///    Статика живёт между загрузками сцен, но НЕ между запусками приложения,
+-    ///    а DontDestroyOnLoad-хост переживает рестарты сцен — эталон всегда
+-    ///    берётся из файла проекта, а не из PlayerPrefs или кэша.
++    ///    Хост переживает рестарты сцен, поэтому эталон всегда = состояние
++    ///    первого запуска этого запуска приложения, а не PlayerPrefs или кэш.
+     /// 3. При каждой повторной загрузке той же сцены (смерть, выход в меню)
+-    ///    Apply() возвращает все объекты к эталону: сбитые позиции, состояние
+-    ///    включено/выключено и настройки компонентов (в т.ч. размеры окна и
+-    ///    музыкальная тема терминала) сбрасываются.
++    ///    Apply() возвращает все объекты к эталону первого запуска.
+     ///
+-    /// Уничтоженные за забег объекты (DelHammer, взрывы) полностью восстановить
+-    /// из снимка нельзя — для них используется копия живого близнеца того же
+-    /// пути, если такой ещё существует в сцене.
++    /// Уничтоженные за забег объекты восстановить из снимка напрямую нельзя —
++    /// для них используется копия живого близнеца того же пути, если такой ещё
++    /// существует в сцене.
+     /// </summary>
+     [DisallowMultipleComponent]
+     public class SceneResetter : MonoBehaviour
+@@ -38,7 +43,7 @@ namespace CarGame.Game
+         private const string HostName = "[SceneResetter]";
+ 
+         [Header("Версия скрипта")]
+-        [SerializeField] private string scriptVersion = "1.0.0";
++        [SerializeField] private string scriptVersion = "1.1.0";
+ 
+         [Tooltip("Сцены, состояние которых фиксируется и сбрасывается после перезапуска. Пусто = любые загружаемые сцены.")]
+         [SerializeField] private List<string> managedScenes = new List<string> { "SampleScene" };
+@@ -83,6 +88,13 @@ namespace CarGame.Game
+         private readonly Dictionary<string, System.Type> capturedTypes = new Dictionary<string, System.Type>();
+         private readonly List<System.Type> typeList = new List<System.Type>();
+ 
++        // Корневые объекты, существовавшие в момент фиксации эталона. Всё, что
++        // появилось в сцене ПОЗЖЕ (сгенерированные за забег постройки, эффекты,
++        // выданные из терминала предметы-пустышки), при рестарте уничтожается —
++        // иначе в «первозданную» сцену первого запуска просачивается мусор
++        // предыдущего забега.
++        private readonly HashSet<GameObject> snapshotRoots = new HashSet<GameObject>();
++
+         [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.BeforeSceneLoad)]
+         private static void Bootstrap()
+         {
+@@ -124,23 +136,49 @@ namespace CarGame.Game
+             SceneSnap existing = FindSnap(scene.name);
+             if (existing == null)
+             {
+-                // Первая загрузка сцены за этот запуск приложения: объекты ещё
+-                // не тронуты кодом (sceneLoaded приходит до Start'ов) — снимаем
+-                // эталон ровно из состояния файла.
+-                Capture(scene);
+-                // Эталон настроек панели терминала — со сценного объекта,
+-                // до того как Show() начнёт пересоздавать панель кодом.
+-                TerminalUI.CaptureFromSceneObject();
++                // Первая загрузка сцены за этот запуск приложения. Снимать
++                // эталон прямо сейчас нельзя: sceneLoaded приходит ДО Awake/Start,
++                // и мы зафиксировали бы «сырое» состояние из редактора (без
++                // заспавненных кодом предметов, без настроенных панелей).
++                // Ждём конца первого кадра — тогда сцена выглядит ровно так,
++                // как её видит игрок при свежем запуске.
++                StartCoroutine(CaptureAtEndOfFirstFrame(scene));
+             }
+             else
+             {
+                 // Повторная загрузка (рестарт после смерти / из главного меню):
+-                // возвращаем всё к эталону из файла проекта.
+-                Apply(existing);
+-                TerminalUI.CaptureFromSceneObject();
++                // Unity уже отстроила сцену из файла; дожидаемся старта всех
++                // скриптов и возвращаем всё к эталону первого запуска.
++                StartCoroutine(ApplyOnNextFrame(existing));
+             }
+         }
+ 
++        private System.Collections.IEnumerator CaptureAtEndOfFirstFrame(Scene scene)
++        {
++            yield return new WaitForEndOfFrame();
++            if (!scene.IsValid() || !scene.isLoaded) yield break;
++            if (FindSnap(scene.name) != null) yield break; // уже снят
++
++            Capture(scene);
++            // Эталон настроек панели терминала — со сценного объекта после
++            // полной инициализации.
++            TerminalUI.CaptureFromSceneObject();
++        }
++
++        private System.Collections.IEnumerator ApplyOnNextFrame(SceneSnap snap)
++        {
++            // Один кадр даём всем Awake()/Start() отработать на freshly loaded
++            // сцене, затем сравниваем с эталоном первого запуска и чиним всё,
++            // что стартовая логика восстановила иначе (или не успела).
++            yield return null;
++
++            Scene scene = SceneManager.GetSceneByName(snap.sceneName);
++            if (!scene.IsValid() || !scene.isLoaded) yield break;
++
++            Apply(snap);
++            TerminalUI.CaptureFromSceneObject();
++        }
++
+         private SceneSnap FindSnap(string sceneName)
+         {
+             for (int i = 0; i < snapshots.Count; i++)
+@@ -154,12 +192,17 @@ namespace CarGame.Game
+         {
+             GameObject[] roots = scene.GetRootGameObjects();
+             var list = new List<ObjSnap>(roots.Length);
++            snapshotRoots.Clear();
+             foreach (GameObject root in roots)
+-                if (root != gameObject) Collect(root.transform, root.name, null, list);
++            {
++                if (root == gameObject) continue;
++                snapshotRoots.Add(root);
++                Collect(root.transform, root.name, null, list);
++            }
+ 
+             SceneSnap snap = new SceneSnap { sceneName = scene.name, objects = list.ToArray() };
+             snapshots.Add(snap);
+-            Debug.Log($"[SceneResetter] Зафиксировано состояние сцены '{scene.name}': объектов {list.Count}.");
++            Debug.Log($"[SceneResetter] Зафиксировано первозданное состояние сцены '{scene.name}' (конец первого кадра): объектов {list.Count}.");
+         }
+ 
+         private void Collect(Transform t, string rootName, string[] parentChain, List<ObjSnap> into)
+@@ -232,15 +275,19 @@ namespace CarGame.Game
+             Scene scene = SceneManager.GetSceneByName(snap.sceneName);
+             if (!scene.IsValid() || !scene.isLoaded) return;
+ 
++            // 1. Удаляем всё, чего не было в эталоне первого запуска: объекты,
++            //    заспавненные/построенные уже ПОСЛЕ фиксации снимка (постройки
++            //    за забег, эффекты, выданные из терминала пустышки-предметы).
++            DestroyForeignObjects(scene);
++
+             int restored = 0, missing = 0;
+             foreach (ObjSnap s in snap.objects)
+             {
+                 Transform t = ResolvePath(scene, s.path);
+                 if (t == null)
+                 {
+-                    // Объекта больше нет: он был уничтожен за забег (DelHammer,
+-                    // взрывы, разобранные постройки). Восстанавливаем копию из
+-                    // живого близнеца, если такой ещё есть в сцене.
++                    // Объекта больше нет: он был уничтожен за забег. Восстанавливаем
++                    // копию из живого близнеца, если такой ещё есть в сцене.
+                     GameObject clone = TryRecreate(scene, s);
+                     if (clone == null) { missing++; continue; }
+                     t = clone.transform;
+@@ -266,7 +313,30 @@ namespace CarGame.Game
+                 }
+             }
+ 
+-            Debug.Log($"[SceneResetter] Сцена '{snap.sceneName}' сброшена к состоянию проекта: полей восстановлено {restored}, объектов утрачено {missing}.");
++            Debug.Log($"[SceneResetter] Сцена '{snap.sceneName}' сброшена к первозданному состоянию первого запуска: полей восстановлено {restored}, объектов утрачено {missing}.");
++        }
++
++        /// <summary>
++        /// Уничтожает корневые объекты загружаемой сцены, которых не было в
++        /// эталоне (появились уже после фиксации снимка первого запуска).
++        /// DontDestroyOnLoad-объекты (хосты, менеджеры) не трогаем — они не
++        /// относятся к этой сцене.
++        /// </summary>
++        private void DestroyForeignObjects(Scene scene)
++        {
++            if (snapshotRoots.Count == 0) return; // эталон по какой-то причине пуст — не рискуем
++            GameObject[] roots = scene.GetRootGameObjects();
++            int destroyed = 0;
++            foreach (GameObject root in roots)
++            {
++                if (root == gameObject) continue;
++                if (snapshotRoots.Contains(root)) continue;
++                DontDestroyOnLoad(root); // выводим из сцены, чтобы Destroy не задел чужое
++                Destroy(root);
++                destroyed++;
++            }
++            if (destroyed > 0)
++                Debug.Log($"[SceneResetter] Удалено объектов, появившихся после эталона: {destroyed}.");
+         }
+ 
+         private static MonoBehaviour FindByType(MonoBehaviour[] all, System.Type type)
