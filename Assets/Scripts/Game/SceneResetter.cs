@@ -43,7 +43,7 @@ namespace CarGame.Game
         private const string HostName = "[SceneResetter]";
 
         [Header("Версия скрипта")]
-        [SerializeField] private string scriptVersion = "1.1.0";
+        [SerializeField] private string scriptVersion = "1.3.2";
 
         [Tooltip("Сцены, состояние которых фиксируется и сбрасывается после перезапуска. Пусто = любые загружаемые сцены.")]
         [SerializeField] private List<string> managedScenes = new List<string> { "SampleScene" };
@@ -88,13 +88,6 @@ namespace CarGame.Game
         private readonly Dictionary<string, System.Type> capturedTypes = new Dictionary<string, System.Type>();
         private readonly List<System.Type> typeList = new List<System.Type>();
 
-        // Корневые объекты, существовавшие в момент фиксации эталона. Всё, что
-        // появилось в сцене ПОЗЖЕ (сгенерированные за забег постройки, эффекты,
-        // выданные из терминала предметы-пустышки), при рестарте уничтожается —
-        // иначе в «первозданную» сцену первого запуска просачивается мусор
-        // предыдущего забега.
-        private readonly HashSet<GameObject> snapshotRoots = new HashSet<GameObject>();
-
         [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.BeforeSceneLoad)]
         private static void Bootstrap()
         {
@@ -132,6 +125,16 @@ namespace CarGame.Game
         private void HandleSceneLoaded(Scene scene, LoadSceneMode mode)
         {
             if (!IsManaged(scene.name)) return;
+
+            // Статические флаги UI переживают SceneManager.LoadScene. Перед
+            // любым сбросом/захватом эталона возвращаем их в состояние
+            // «первого запуска», иначе:
+            //  - TerminalUI.sceneDefaultsCaptured навсегда фиксирует эталон
+            //    панели старым значением (панель не переснимается);
+            //  - UiState.menuBlocked остаётся true после выхода из меню, и
+            //    игрок теряет управление сразу после респавна.
+            TerminalUI.AllowRebase();
+            UiState.ResetMenuState();
 
             SceneSnap existing = FindSnap(scene.name);
             if (existing == null)
@@ -192,11 +195,9 @@ namespace CarGame.Game
         {
             GameObject[] roots = scene.GetRootGameObjects();
             var list = new List<ObjSnap>(roots.Length);
-            snapshotRoots.Clear();
             foreach (GameObject root in roots)
             {
                 if (root == gameObject) continue;
-                snapshotRoots.Add(root);
                 Collect(root.transform, root.name, null, list);
             }
 
@@ -275,11 +276,6 @@ namespace CarGame.Game
             Scene scene = SceneManager.GetSceneByName(snap.sceneName);
             if (!scene.IsValid() || !scene.isLoaded) return;
 
-            // 1. Удаляем всё, чего не было в эталоне первого запуска: объекты,
-            //    заспавненные/построенные уже ПОСЛЕ фиксации снимка (постройки
-            //    за забег, эффекты, выданные из терминала пустышки-предметы).
-            DestroyForeignObjects(scene);
-
             int restored = 0, missing = 0;
             foreach (ObjSnap s in snap.objects)
             {
@@ -314,29 +310,6 @@ namespace CarGame.Game
             }
 
             Debug.Log($"[SceneResetter] Сцена '{snap.sceneName}' сброшена к первозданному состоянию первого запуска: полей восстановлено {restored}, объектов утрачено {missing}.");
-        }
-
-        /// <summary>
-        /// Уничтожает корневые объекты загружаемой сцены, которых не было в
-        /// эталоне (появились уже после фиксации снимка первого запуска).
-        /// DontDestroyOnLoad-объекты (хосты, менеджеры) не трогаем — они не
-        /// относятся к этой сцене.
-        /// </summary>
-        private void DestroyForeignObjects(Scene scene)
-        {
-            if (snapshotRoots.Count == 0) return; // эталон по какой-то причине пуст — не рискуем
-            GameObject[] roots = scene.GetRootGameObjects();
-            int destroyed = 0;
-            foreach (GameObject root in roots)
-            {
-                if (root == gameObject) continue;
-                if (snapshotRoots.Contains(root)) continue;
-                DontDestroyOnLoad(root); // выводим из сцены, чтобы Destroy не задел чужое
-                Destroy(root);
-                destroyed++;
-            }
-            if (destroyed > 0)
-                Debug.Log($"[SceneResetter] Удалено объектов, появившихся после эталона: {destroyed}.");
         }
 
         private static MonoBehaviour FindByType(MonoBehaviour[] all, System.Type type)
