@@ -349,6 +349,35 @@ namespace CarGame.UI
 
         public void Attach(SpawnTerminal owner) { terminal = owner; if (owner != null && transform.parent != owner.transform) transform.SetParent(owner.transform, false); builtFor = null; }
 
+        /// <summary>
+        /// Вызывается из SceneResetter сразу после повторной загрузки сцены.
+        /// Сбрасывает рантайм-состояние панели к виду первого запуска: rig
+        /// «TerminalPanel» создаётся кодом и его позиция каждый кадр
+        /// пересчитывается из ScreenPoint терминала — если оставить старый rig
+        /// или старую ссылку на уничтоженный вместе со старой сценой терминал,
+        /// HUD съезжает с положенного места. После этого вызова ближайший
+        /// Update построит панель заново ровно так же, как на первом кадре
+        /// самой первой загрузки.
+        /// </summary>
+        public void RebindAfterSceneLoad()
+        {
+            if (rig != null) Destroy(rig.gameObject);
+            rig = null; canvasRect = null; backdrop = null; content = null;
+            topBar = null; bottomBar = null; sectionTitleLabel = null;
+            leftArrow = null; rightArrow = null; backButton = null;
+            countMinus = null; countPlus = null; countLabel = null;
+            slots.Clear(); buttons.Clear();
+            aimedSlot = null; aimedButton = null;
+            builtFor = null;
+            // Старый TerminalUI мог пережить перезагрузку как DontDestroyOnLoad
+            // или указывать на уничтоженный терминал — отвязываемся; следующий
+            // SpawnTerminal.Awake() найдёт Instance == null и создаст панель
+            // заново из файла сцены/эталона.
+            if (terminal != null && !terminal.gameObject.scene.IsValid()) terminal = null;
+            visible = false;
+            StopMusic();
+        }
+
         private void Update()
         {
             if (ResolveCamera() == null) return;

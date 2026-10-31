@@ -63810,6 +63810,6 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 5fb8d280e6c94360aee837c4b6bd6a13, type: 3}
   m_Name: 
   m_EditorClassIdentifier: 
-  scriptVersion: 1.3.2
+  scriptVersion: 1.4.0
   managedScenes:
   - SampleScene
