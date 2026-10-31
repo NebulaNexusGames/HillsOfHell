@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using CarGame.UI;
 using UnityEngine;
@@ -240,7 +241,7 @@ namespace CarGame.Game
                 {
                     typeIndex = idx,
                     typeName = key,
-                    json = SafeToJson(mb),
+                    json = ScrubRuntimeFields(SafeToJson(mb), type),
                 });
             }
             s.components = comps.ToArray();
@@ -276,6 +277,21 @@ namespace CarGame.Game
             Scene scene = SceneManager.GetSceneByName(snap.sceneName);
             if (!scene.IsValid() || !scene.isLoaded) return;
 
+            // Управление игрока — вне зависимости от того, каким оно попало в
+            // эталон: новая загрузка сцены = новый забег = полный контроль.
+            // Страховка на случай, если стартовый скрипт (меню/диалог) успел
+            // вызвать EnterMenu() до нашего сброса.
+            foreach (GameObject root in scene.GetRootGameObjects())
+            {
+                CarGame.Player.PlayerController pc = root.GetComponentInChildren<CarGame.Player.PlayerController>(true);
+                if (pc != null)
+                {
+                    pc.SetControlEnabled(true);
+                    pc.SetLookEnabled(true);
+                    break;
+                }
+            }
+
             int restored = 0, missing = 0;
             foreach (ObjSnap s in snap.objects)
             {
@@ -310,6 +326,142 @@ namespace CarGame.Game
             }
 
             Debug.Log($"[SceneResetter] Сцена '{snap.sceneName}' сброшена к первозданному состоянию первого запуска: полей восстановлено {restored}, объектов утрачено {missing}.");
+        }
+
+        // Поля игрового ввода PlayerController не должны переноситься снимком:
+        // если на момент конца первого кадра было открыто меню (controlEnabled
+        // == false в эталоне), то после каждого рестарта FromJsonOverwrite
+        // заливал бы игрока в «заблокированное» состояние — персонаж не мог бы
+        // ходить, смотреть, брать предметы и открывать инвентарь. При загрузке
+        // сцены эти флаги всегда равны значению из кода (= первый запуск).
+        private static readonly HashSet<string> RuntimeOnlyFields = new HashSet<string>(StringComparer.Ordinal)
+        {
+            "CarGame.Player.PlayerController.controlEnabled",
+            "CarGame.Player.PlayerController.lookEnabled",
+        };
+
+        /// <summary>
+        /// Вычёркивает из JSON снимка поля, которые нельзя переносить между
+        /// забегами. Возвращает null, если после вычёркивания гасить нечего.
+        /// </summary>
+        private static string ScrubRuntimeFields(string json, System.Type type)
+        {
+            if (string.IsNullOrEmpty(json)) return json;
+            string prefix = type.FullName + ".";
+            string result = json;
+            foreach (string key in RuntimeOnlyFields)
+            {
+                if (!key.StartsWith(prefix, StringComparison.Ordinal)) continue;
+                result = RemoveJsonField(result, key.Substring(prefix.Length));
+            }
+            if (string.IsNullOrEmpty(result) || result.Trim() == "{}") return null;
+            return result;
+        }
+
+        /// <summary>
+        /// Удаляет из JSON ПЕРВОГО уровня поле "name": ... Строки с запятыми и
+        /// скобками внутри значений пропускаются по кавычкам; ключи внутри
+        /// вложенных объектов/массивов не трогаются (глубина учитывается).
+        /// </summary>
+        private static string RemoveJsonField(string json, string name)
+        {
+            string needle = "\"" + name + "\"";
+            int searchFrom = 0;
+            while (true)
+            {
+                int i = FindTopLevelKey(json, needle, searchFrom);
+                if (i < 0) return json;
+
+                int colon = json.IndexOf(':', i + needle.Length);
+                if (colon < 0) return json;
+                int q = colon + 1;
+                while (q < json.Length && char.IsWhiteSpace(json[q])) q++;
+
+                int end; // позиция сразу за значением
+                if (q < json.Length && json[q] == '"')
+                {
+                    end = SkipString(json, q);
+                }
+                else
+                {
+                    end = q;
+                    int depthB = 0, depthC = 0;
+                    while (end < json.Length)
+                    {
+                        char c = json[end];
+                        if (c == '"') { end = SkipString(json, end); continue; }
+                        if (c == '{') depthB++;
+                        else if (c == '}') { if (depthB == 0) break; depthB--; }
+                        else if (c == '[') depthC++;
+                        else if (c == ']') { if (depthC == 0) break; depthC--; }
+                        else if (c == ',' && depthB == 0 && depthC == 0) break;
+                        end++;
+                    }
+                }
+
+                int after = end;
+                while (after < json.Length && char.IsWhiteSpace(json[after])) after++;
+                if (after < json.Length && json[after] == ',')
+                {
+                    after++; // захватили запятую после значения
+                }
+                else
+                {
+                    // последний элемент объекта — убираем предшествующую запятую
+                    int b = i - 1;
+                    while (b >= 0 && char.IsWhiteSpace(json[b])) b--;
+                    if (b >= 0 && json[b] == ',') i = b;
+                }
+                json = json.Substring(0, i) + json.Substring(after);
+                searchFrom = i; // в укороченной строке продолжаем с той же позиции
+            }
+        }
+
+        /// <summary>
+        /// Ищет ключneedle на верхнем уровне JSON (глубина {} и [] равна 0),
+        /// пропуская строковые значения. -1 если не найден.
+        /// </summary>
+        private static int FindTopLevelKey(string json, string needle, int from)
+        {
+            int depthB = 0, depthC = 0;
+            for (int idx = from; idx < json.Length; idx++)
+            {
+                char c = json[idx];
+                if (c == '"')
+                {
+                    if (depthB == 0 && depthC == 0 && idx + needle.Length <= json.Length
+                        && string.CompareOrdinal(json, idx, needle, 0, needle.Length) == 0)
+                    {
+                        int p = idx - 1;
+                        while (p >= 0 && char.IsWhiteSpace(json[p])) p--;
+                        bool keyPosition = (p < 0 || json[p] == '{' || json[p] == ',');
+                        if (keyPosition)
+                        {
+                            int k = idx + needle.Length;
+                            while (k < json.Length && char.IsWhiteSpace(json[k])) k++;
+                            if (k < json.Length && json[k] == ':') return idx;
+                        }
+                    }
+                    idx = SkipString(json, idx) - 1;
+                    continue;
+                }
+                if (c == '{') depthB++;
+                else if (c == '}') depthB--;
+                else if (c == '[') depthC++;
+                else if (c == ']') depthC--;
+            }
+            return -1;
+        }
+        private static int SkipString(string json, int startQuote)
+        {
+            int e = startQuote + 1;
+            while (e < json.Length)
+            {
+                if (json[e] == '\\') { e += 2; continue; }
+                if (json[e] == '"') return e + 1;
+                e++;
+            }
+            return e;
         }
 
         private static MonoBehaviour FindByType(MonoBehaviour[] all, System.Type type)
