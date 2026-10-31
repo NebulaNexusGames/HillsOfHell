@@ -57268,6 +57268,7 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: b7bdda2dc58700a4f80582a4ac245434, type: 3}
   m_Name: 
   m_EditorClassIdentifier: 
+  scriptVersion: 1.3.0
   hitRange: 3.5
   hitStartOffset: 0.4
   hitMask:

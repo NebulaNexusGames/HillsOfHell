@@ -8,6 +8,10 @@ namespace CarGame.Items
     [DisallowMultipleComponent]
     public class DelHammerItem : MonoBehaviour, IHandUsable
     {
+        [Header("Версия скрипта")]
+        [Tooltip("Текущая версия скрипта молота. Обновляется при каждом изменении логики.")]
+        [SerializeField] private string scriptVersion = "1.3.0";
+
         [Header("Удар")]
         [SerializeField] private float hitRange = 3.5f;
         [SerializeField] private float hitStartOffset = 0.4f;
