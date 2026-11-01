@@ -109,6 +109,13 @@ namespace CarGame.Combat
         private float orbitAngle;
         private Vector3 velocity;
         private Vector3 noseLocal = Vector3.forward;
+        // Эталонное направление носа в локальных координатах корпуса, снятое с
+        // префаба до любых автоповоротов. Нужно, чтобы выровнять ориентацию
+        // сразу после спавна: иначе FaceAxis на первом же кадре патруля начинает
+        // доворачивать дрон по питчу к точке цели (она на земле) — и робот
+        // «смотрит в землю» носом вниз.
+        private Quaternion prefabLocalRotation = Quaternion.identity;
+        private bool spawnOrientationApplied;
         private Vector3 patrolTarget;
         private bool patrolTargetValid;
         private float patrolHoldUntil;
@@ -198,7 +205,45 @@ namespace CarGame.Combat
             BaseAwake();
             CacheNoseAxis();
 
+            // Запоминаем эталонную ориентацию носа из префаба ДО того, как любая
+            // автоподстройка начнёт крутить корпус. Это то, как робота задал
+            // дизайнер: именно к этому направлению дрон будет приведён после
+            // спавна (см. ApplySpawnOrientation).
+            prefabLocalRotation = Quaternion.LookRotation(noseLocal, Vector3.up);
+
             StartCoroutine(StartHoverCheck());
+        }
+
+        /// <summary>
+        /// Приводит нос дрона к эталонной ориентации префаба сразу после спавна.
+        /// Поворот выполняется вокруг вертикальной оси (только рыскание): питч и
+        /// крен корпуса не создаются с нуля. После этого FaceAxis в патруле уже
+        /// не «ныряет» носом вниз — цель по высоте совпадает с линией полёта.
+        /// </summary>
+        private void ApplySpawnOrientation()
+        {
+            if (spawnOrientationApplied) return;
+            spawnOrientationApplied = true;
+
+            Vector3 flat = Vector3.ProjectOnPlane(FrontDirection, Vector3.up);
+            if (flat.sqrMagnitude < 0.0001f)
+            {
+                // Нос смотрит строго вверх/вниз (сломанный префаб): берём
+                // горизонтальную проекцию эталона префаба.
+                flat = Vector3.ProjectOnPlane(transform.TransformDirection(prefabLocalRotation * Vector3.forward), Vector3.up);
+                if (flat.sqrMagnitude < 0.0001f) flat = transform.forward - Vector3.Project(transform.forward, Vector3.up);
+                if (flat.sqrMagnitude < 0.0001f) return;
+            }
+
+            Vector3 want = Vector3.ProjectOnPlane(transform.TransformDirection(prefabLocalRotation * Vector3.forward), Vector3.up);
+            if (want.sqrMagnitude < 0.0001f) return;
+            want.Normalize();
+
+            float yaw = Vector3.SignedAngle(flat.normalized, want, Vector3.up);
+            if (Mathf.Abs(yaw) > 0.01f)
+            {
+                transform.rotation = Quaternion.AngleAxis(yaw, Vector3.up) * transform.rotation;
+            }
         }
 
         /// <summary>
@@ -292,6 +337,10 @@ namespace CarGame.Combat
 
             BaseUpdate();
 
+            // Первая же попытка лететь: выравниваем нос по эталону префаба,
+            // чтобы дрон не «смотрел в землю» после спавна.
+            ApplySpawnOrientation();
+
             // Жёсткий пол и потолок высоты: дрон никогда не волочится брюхом по
             // земле и сам протискивается в низкие проходы.
             ClampAltitude();
@@ -360,7 +409,10 @@ namespace CarGame.Combat
             {
                 direction.Normalize();
                 Move(direction, moveSpeed * 0.55f);
-                FaceAxis(direction, turnSpeed, Time.deltaTime);
+
+                // Как и в патруле: только рыскание, без питча к земле.
+                if (horizontal.sqrMagnitude > 0.0001f)
+                    FaceAxis(horizontal.normalized, turnSpeed, Time.deltaTime);
             }
             else
             {
@@ -485,6 +537,12 @@ namespace CarGame.Combat
         private void UpdatePatrol()
         {
             Vector3 drift = ResolvePatrolPoint() - FrontPosition;
+
+            // В патруле дрон поворачивается ТОЛЬКО по рысканию (yaw): направление
+            // к точке цели проецируется на горизонтальную плоскость. Раньше в
+            // FaceAxis уходила вертикальная составляющая — при низкой точке
+            // патруля нос задирался/опускался, и после спавна дрон «смотрел в
+            // землю». Питч теперь возможен только в бою (FaceTarget).
             Vector3 horizontal = Vector3.ProjectOnPlane(drift, Vector3.up);
 
             Vector3 direction = ComputeAvoidance(horizontal) + Vector3.Project(drift, Vector3.up);
@@ -496,7 +554,9 @@ namespace CarGame.Combat
 
             direction.Normalize();
             Move(direction, moveSpeed * 0.55f);
-            FaceAxis(direction, turnSpeed, Time.deltaTime);
+
+            if (horizontal.sqrMagnitude > 0.0001f)
+                FaceAxis(horizontal.normalized, turnSpeed, Time.deltaTime);
         }
 
         private void UpdateAttack()
@@ -572,12 +632,26 @@ namespace CarGame.Combat
                 if (Time.time < patrolHoldUntil) return FrontPosition;
 
                 Vector2 offset = Random.insideUnitCircle * PatrolRadius;
-                patrolTarget = SpawnPoint + new Vector3(offset.x, 0f, offset.y);
+                // Высота точки патруля — штатная patrolAltitude над землёй, а не
+                // y спавна: иначе точка лежит на уровне земли и дрон тянет нос
+                // вниз, «смотря в пол».
+                float groundY = SpawnPoint.y;
+                if (Physics.Raycast(transform.position, Vector3.down, out RaycastHit ground,
+                    patrolAltitude + 60f, crashMask, QueryTriggerInteraction.Ignore))
+                {
+                    groundY = ground.point.y;
+                }
+
+                patrolTarget = new Vector3(
+                    SpawnPoint.x + offset.x,
+                    groundY + Mathf.Max(patrolAltitude, minGroundHeight),
+                    SpawnPoint.z + offset.y);
                 patrolTargetValid = true;
             }
 
             Vector3 flat = Vector3.ProjectOnPlane(patrolTarget - FrontPosition, Vector3.up);
-            if (flat.magnitude <= PatrolPointTolerance)
+            bool heightReached = Mathf.Abs(patrolTarget.y - FrontPosition.y) <= PatrolPointTolerance;
+            if (flat.magnitude <= PatrolPointTolerance && heightReached)
             {
                 patrolTargetValid = false;
                 patrolHoldUntil = Time.time + PatrolWaitTime;

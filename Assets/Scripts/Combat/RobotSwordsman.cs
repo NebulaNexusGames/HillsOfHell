@@ -196,6 +196,19 @@ namespace CarGame.Combat
             SetFloat("MoveSpeed", speed);
             SetBool("InCombat", engaged);
 
+            // Ключ к «бегу на месте»: Play/CrossFade в обход переходовAnimator
+            // каждый кадр сбрасывали состояние в начало — цикл шагов не
+            // доигрывался и ноги дёргались на месте. Если контроллер управляет
+            // движением через параметры (MoveSpeed / InCombat), код больше НИЧЕГО
+            // не форсирует: аниматор сам переключает Idle/Walk/Run по значениям.
+            bool animatorDriven = HasParameter("MoveSpeed") || HasParameter("InCombat");
+            if (animatorDriven)
+            {
+                animator.speed = 1f;
+                currentState = null;
+                return;
+            }
+
             if (attackLockTime > 0f)
             {
                 attackLockTime -= Time.deltaTime;
@@ -251,6 +264,16 @@ namespace CarGame.Combat
 
             int hash = Animator.StringToHash(attackState);
             if (!HasState(hash)) return;
+
+            // Если контроллер сам переключает состояния по параметрам, удар
+            // тоже запускается триггером, а не форсированным Play — иначе
+            // Play каждый раз обрывает боевой цикл и «ломает» анимацию.
+            if (HasParameter("Attack"))
+            {
+                FireTrigger("Attack");
+                attackLockTime = AttackStateLength();
+                return;
+            }
 
             currentState = attackState;
             attackLockTime = AttackStateLength();
