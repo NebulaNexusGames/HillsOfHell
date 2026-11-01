@@ -18,6 +18,8 @@ namespace CarGame.Combat
         [SerializeField] private LayerMask sightBlockers = ~0;
         [Tooltip("Сколько секунд не нужно видеть цель, чтобы забыть её")]
         [SerializeField] private float loseTargetMemory = 4f;
+        [Tooltip("Помнить ли цель после потери прямой видимости (спряталась за объектом) и преследовать последнюю виденную позицию. Дрон: да — иначе он «забывает» игрока из-за любой преграды")]
+        [SerializeField] private bool rememberTargetWhenLost = true;
         [Tooltip("Требовать для захвата и удержания цели сектор обзора перед роботом. Мечник: погоня только если реально увидел. 0 — без ограничения угла")]
         [SerializeField] private float sightAngleDegrees = 120f;
         [Tooltip("Радиус зоны вокруг робота, внутри которой цель замечается с любой стороны (даже за спиной). 0 — отключено")]
@@ -94,6 +96,10 @@ namespace CarGame.Combat
         protected Health health;
         protected PlayerController player;
 
+        /// <summary>Звуки робота (шаги/прыжки/сигнал обнаружения). Создаётся
+        /// автоматически на Awake, доступен наследникам для вызовов Jump/Land/Step.</summary>
+        protected RobotVoice Voice { get; private set; }
+
         private Transform currentPatrolPoint;
         private float pauseUntil;
         private float patrolWaitUntil => pauseUntil;
@@ -163,6 +169,17 @@ namespace CarGame.Combat
         /// переопределить (мечник: 10 секунд по ТЗ).</summary>
         protected virtual float LoseTargetMemoryOverride => -1f;
 
+        /// <summary>Помнить ли цель после потери прямой видимости (игрок
+        /// спрятался за объектом) и бежать к последней виденной позиции.
+        /// Выключено — цель забывается мгновенно.</summary>
+        protected bool RemembersTargetWhenLost => rememberTargetWhenLost;
+
+        /// <summary>Преследование «по памяти»: есть активная цель, она прямо
+        /// сейчас не видна, но память о ней ещё жива и её позиция известна.
+        /// Наследники используют это для облёта препятствий сменой высоты.</summary>
+        protected bool ChasingByMemory =>
+            HasTarget && rememberTargetWhenLost && hasLastKnownTargetPosition && !IsTargetVisible(Target);
+
         /// <summary>Сбрасывать ли цель, если проверка досягаемости (высота/уклон)
         /// провалилась. Наследник может позволить «пробовать достать» сквозь
         /// препятствие, чтобы робот не забывал игрока из-за преграды на пути.</summary>
@@ -188,6 +205,13 @@ namespace CarGame.Combat
             selfBody = GetComponent<Rigidbody>();
             ReadOwnSize();
             PickNextPatrolPoint();
+
+            // Звуки робота вешаются автоматически на ЛЮБОГО EnemyBase: сигнал
+            // обнаружения цели звучит в базовом Update(), а шаги/прыжки/
+            // приземления дергают Voice из наследников. Клипы — из полей
+            // инспектора (stepClip/jumpClip/...), пусто — процедурные звуки.
+            if (Voice == null) Voice = GetComponent<RobotVoice>();
+            if (Voice == null) Voice = gameObject.AddComponent<RobotVoice>();
         }
 
         private void ReadOwnSize()
@@ -284,9 +308,10 @@ namespace CarGame.Combat
 
             // Сколько секунд робот помнит цель после потери видимости.
             // Наследник может переопределить (мечник — 10 секунд по ТЗ).
-            float memoryTime = LoseTargetMemoryOverride > 0f
-                ? LoseTargetMemoryOverride
-                : loseTargetMemory;
+            // Флаг rememberTargetWhenLost = false выключает память целиком.
+            float memoryTime = !rememberTargetWhenLost
+                ? 0f
+                : (LoseTargetMemoryOverride > 0f ? LoseTargetMemoryOverride : loseTargetMemory);
 
             // Пока цель есть, каждый кадр проверяем, видно ли её. Так робот не
             // уходит в стену, преследуя позицию, которую потерял из виду: как
@@ -1084,26 +1109,38 @@ namespace CarGame.Combat
         }
 
         /// <summary>
-        /// Звуки роботов: шаги мечника, прыжки динобота, гул полёта и сигнал
-        /// обнаружения цели. Клипы генерируются процедурно (CarGame.Audio),
-        /// поэтому ассеты не нужны; свои AudioClip можно подкинуть в инспекторе.
+        /// Звуки роботов: шаги мечника, прыжок/полёт/приземление динобота,
+        /// гул винтов дрона и сигнал обнаружения цели. Клипы генерируются
+        /// процедурно (CarGame.Audio), поэтому ассеты не нужны; свои AudioClip
+        /// можно подкинуть в инспекторе — они имеют приоритет.
         /// Вешается автоматически на любого EnemyBase при Awake.
         /// </summary>
         [DisallowMultipleComponent]
         public class RobotVoice : MonoBehaviour
         {
+            [Header("Клипы")]
             [Tooltip("Свой клип шагов (мечник). Пусто — процедурный звук")]
             [SerializeField] private AudioClip stepClip;
-            [Tooltip("Свой клип прыжка (динобот). Пусто — процедурный звук")]
+            [Tooltip("Свой клип прыжка-отталкивания (динобот). Пусто — процедурный звук")]
             [SerializeField] private AudioClip jumpClip;
-            [Tooltip("Свой клип сигнала обнаружения цели. Пусто — процедурный звук")]
+            [Tooltip("Зацикленный клип полёта: жужжание в воздухе (динобот) или гул винтов (дрон). Пусто — процедурная петля")]
+            [SerializeField] private AudioClip flightLoopClip;
+            [Tooltip("Свой клип приземления (динобот). Пусто — процедурный глухой удар")]
+            [SerializeField] private AudioClip landClip;
+            [Tooltip("Свой клип сигнала обнаружения цели (звучит у всех роботов в момент захвата). Пусто — процедурный звук")]
             [SerializeField] private AudioClip alertClip;
-            [Tooltip("Зацикленный гул винтов для дрона. Пусто — процедурная петля")]
-            [SerializeField] private AudioClip hoverLoopClip;
+            [Tooltip("Свой клип выстрела дрона. Пусто — процедурный звук")]
+            [SerializeField] private AudioClip shotClip;
+
+            [Header("Громкости")]
             [SerializeField][Range(0f, 2f)] private float stepVolume = 0.35f;
             [SerializeField][Range(0f, 2f)] private float jumpVolume = 0.6f;
+            [SerializeField][Range(0f, 2f)] private float landVolume = 0.5f;
             [SerializeField][Range(0f, 2f)] private float alertVolume = 0.8f;
-            [SerializeField][Range(0f, 1f)] private float hoverVolume = 0.25f;
+            [SerializeField][Range(0f, 1f)] private float flightLoopVolume = 0.25f;
+            [SerializeField][Range(0f, 2f)] private float shotVolume = 0.5f;
+
+            [Header("Интервалы")]
             [Tooltip("Интервал шагов на патруле / беге, с")]
             [SerializeField] private float patrolStepInterval = 0.55f;
             [SerializeField] private float runStepInterval = 0.34f;
@@ -1111,12 +1148,20 @@ namespace CarGame.Combat
             private AudioSource voice;
             private AudioSource hover;
             private EnemyBase owner;
+            private RobotDrone droneOwner;
+            private RobotKamikaze kamikazeOwner;
             private float stepTimer;
             private bool wasEngaged;
+            private bool wasAirborne;
+
+            /// <summary>Один процедурный клип удара приземления на весь проект.</summary>
+            private static AudioClip sharedLandClip;
 
             private void Awake()
             {
                 owner = GetComponent<EnemyBase>();
+                droneOwner = GetComponent<RobotDrone>();
+                kamikazeOwner = GetComponent<RobotKamikaze>();
 
                 voice = gameObject.AddComponent<AudioSource>();
                 voice.playOnAwake = false;
@@ -1124,7 +1169,9 @@ namespace CarGame.Combat
                 voice.minDistance = 2f;
                 voice.maxDistance = 45f;
 
-                if (GetComponent<RobotDrone>() != null)
+                // Петля полёта: у дрона — постоянный гул винтов; у динобота —
+                // жужжание только ПОКА он в воздухе (см. Update).
+                if (droneOwner != null || kamikazeOwner != null)
                 {
                     hover = gameObject.AddComponent<AudioSource>();
                     hover.playOnAwake = false;
@@ -1132,9 +1179,12 @@ namespace CarGame.Combat
                     hover.spatialBlend = 1f;
                     hover.minDistance = 3f;
                     hover.maxDistance = 70f;
-                    hover.clip = hoverLoopClip != null ? hoverLoopClip : CarGame.Audio.ProceduralAudio.HoverLoop();
-                    hover.volume = hoverVolume;
-                    hover.Play();
+                    hover.clip = flightLoopClip != null ? flightLoopClip : CarGame.Audio.ProceduralAudio.HoverLoop();
+                    hover.volume = flightLoopVolume;
+
+                    // Дрон летает всегда — петля стартует сразу.
+                    if (droneOwner != null) hover.Play();
+                    else hover.Stop();
                 }
             }
 
@@ -1144,17 +1194,28 @@ namespace CarGame.Combat
 
                 // Сигнал обнаружения — ровно в момент захвата цели.
                 bool engaged = owner.HasTarget;
-                if (engaged && !wasEngaged) Play(alertClip, CarGame.Audio.ProceduralAudio.Alert(), alertVolume, pitchJitter: 0.08f);
+                if (engaged && !wasEngaged) Play(alertClip, CachedAlert(), alertVolume, pitchJitter: 0.08f);
                 wasEngaged = engaged;
 
-                if (hover != null)
+                if (hover == null) return;
+
+                if (kamikazeOwner != null)
                 {
-                    // Чем быстрее летит дрон — тем выше тон винтов.
-                    Rigidbody body = owner.GetComponent<Rigidbody>();
-                    float speed = body != null ? body.linearVelocity.magnitude : 0f;
-                    hover.pitch = Mathf.Clamp(0.85f + speed * 0.03f, 0.8f, 1.5f);
-                    hover.volume = hoverVolume * Mathf.Clamp01(0.4f + speed * 0.12f);
+                    // Динобот: звук полёта звучит всё время, пока робот в воздухе,
+                    // и гаснет сразу после приземления.
+                    bool airborne = kamikazeOwner.IsAirborneForSound;
+                    if (airborne && !wasAirborne) hover.Play();
+                    if (!airborne && wasAirborne) hover.Stop();
+                    wasAirborne = airborne;
+                    if (airborne) hover.pitch = Mathf.Clamp(0.9f + Random.value * 0.1f, 0.85f, 1.15f);
+                    return;
                 }
+
+                // Чем быстрее летит дрон — тем выше тон винтов.
+                Rigidbody body = owner.GetComponent<Rigidbody>();
+                float speed = body != null ? body.linearVelocity.magnitude : 0f;
+                hover.pitch = Mathf.Clamp(0.85f + speed * 0.03f, 0.8f, 1.5f);
+                hover.volume = flightLoopVolume * Mathf.Clamp01(0.4f + speed * 0.12f);
             }
 
             /// <summary>Шаги мечника: вызывать каждый кадр, интервал держит сам.</summary>
@@ -1172,19 +1233,66 @@ namespace CarGame.Combat
 
                 stepTimer = engaged ? runStepInterval : patrolStepInterval;
                 float tone = engaged ? 150f : 118f;
-                Play(stepClip, CarGame.Audio.ProceduralAudio.Footstep(0.5f, tone), stepVolume, pitchJitter: 0.12f);
+                Play(stepClip, CachedFootstep(0.5f, tone), stepVolume, pitchJitter: 0.12f);
             }
 
             /// <summary>Прыжок динобота: толчок вверх.</summary>
             public void Jump()
             {
-                Play(jumpClip, CarGame.Audio.ProceduralAudio.Jump(), jumpVolume, pitchJitter: 0.1f);
+                Play(jumpClip, CachedJump(), jumpVolume, pitchJitter: 0.1f);
             }
 
             /// <summary>Приземление динобота: глухой тяжёлый удар.</summary>
             public void Land()
             {
-                Play(null, CarGame.Audio.ProceduralAudio.Impact(true), jumpVolume * 0.8f, pitchJitter: -0.15f);
+                if (landClip == null && sharedLandClip == null)
+                    sharedLandClip = CarGame.Audio.ProceduralAudio.Impact(true);
+
+                Play(landClip, sharedLandClip, landVolume, pitchJitter: -0.15f);
+            }
+
+            /// <summary>Выстрел дрона.</summary>
+            public void Shot()
+            {
+                Play(shotClip, CachedShot(), shotVolume, pitchJitter: 0.05f);
+            }
+
+            // Процедурные клипы кешируются: иначе на каждом событии создавался
+            // бы новый AudioClip (те же шаги звучат несколько раз в секунду).
+            private static AudioClip cachedAlert;
+            private static AudioClip cachedJump;
+            private static AudioClip cachedShot;
+            private static AudioClip cachedStepPatrol;
+            private static AudioClip cachedStepRun;
+
+            private static AudioClip CachedAlert()
+            {
+                if (cachedAlert == null) cachedAlert = CarGame.Audio.ProceduralAudio.Alert();
+                return cachedAlert;
+            }
+
+            private static AudioClip CachedJump()
+            {
+                if (cachedJump == null) cachedJump = CarGame.Audio.ProceduralAudio.Jump();
+                return cachedJump;
+            }
+
+            private static AudioClip CachedShot()
+            {
+                if (cachedShot == null) cachedShot = CarGame.Audio.ProceduralAudio.Gunshot(false);
+                return cachedShot;
+            }
+
+            private static AudioClip CachedFootstep(float grit, float tone)
+            {
+                if (tone > 130f)
+                {
+                    if (cachedStepRun == null) cachedStepRun = CarGame.Audio.ProceduralAudio.Footstep(grit, tone);
+                    return cachedStepRun;
+                }
+
+                if (cachedStepPatrol == null) cachedStepPatrol = CarGame.Audio.ProceduralAudio.Footstep(grit, tone);
+                return cachedStepPatrol;
             }
 
             private void Play(AudioClip custom, AudioClip procedural, float volume, float pitchJitter)
