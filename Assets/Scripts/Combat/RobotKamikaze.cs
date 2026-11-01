@@ -140,6 +140,14 @@ namespace CarGame.Combat
         private Vector3 lockedJumpDirection;
 
         /// <summary>
+        /// Сколько коротких прыжков преследования осталось в текущей цепочке.
+        /// Считается при отталкивании (PlanJump) и расходуется на приземлении:
+        /// пока hops > 0, робот прыгает снова без паузы. Цепочка закончилась —
+        /// цель перепроверяется: рядом → замах/боевой прыжок, нет → новый расчёт.
+        /// </summary>
+        private int remainingHops;
+
+        /// <summary>
         /// Горизонтальная скорость, рассчитанная при отталкивании под точку
         /// приземления. В полёте она больше не пересчитывается.
         /// </summary>
@@ -475,9 +483,20 @@ namespace CarGame.Combat
 
                 if (HasTarget)
                 {
-                    // Ещё не на минимальной дистанции — но сначала короткая
-                    // остановка: игрок мог подойти сам, и тогда нужен замах,
-                    // а не ещё один прыжок мимо.
+                    // Цепочка коротких прыжков: пока remainingHops > 0, робот
+                    // летит дальше БЕЗ паузы — высота и дальность одного прыжка
+                    // фиксированы, дистанция берётся количеством прыжков.
+                    if (remainingHops > 1 && DistanceToTarget() > attackRange)
+                    {
+                        Launch(false);
+                        return;
+                    }
+
+                    // Цепочка закончилась (или игрок сам подошёл): цель
+                    // перепроверяется заново. В зоне атаки — замах и боевой
+                    // прыжок; далеко — новый расчёт цепочки через паузу.
+                    remainingHops = 0;
+
                     if (DistanceToTarget() > attackRange)
                     {
                         EnterPhase(JumpPhase.ChasePause, chasePauseDuration);
@@ -488,12 +507,14 @@ namespace CarGame.Combat
                     return;
                 }
 
+                remainingHops = 0;
                 attackChain = false;
                 cooldownTimer = jumpCooldown;
                 EnterPhase(JumpPhase.Idle, 0f);
                 return;
             }
 
+            remainingHops = 0;
             cooldownTimer = jumpCooldown;
 
             if (HasTarget && DistanceToTarget() <= prepareRange)
@@ -559,7 +580,9 @@ namespace CarGame.Combat
             // Прыгать, не коснувшись земли, робот не может.
             if (!IsGrounded()) return;
 
-            PlanJump(attack, out Vector3 direction, out float speed, out int hops);
+            PlanJump(attack, out Vector3 direction, out float speed, out int hops, out float upSpeed);
+
+            remainingHops = attack ? 0 : hops;
 
             lockedJumpDirection = direction;
             lockedJumpSpeed = speed;
@@ -599,9 +622,11 @@ namespace CarGame.Combat
         ///
         /// Без цели прыжок идёт в точку патрулирования обычной скоростью.
         /// </summary>
-        private void PlanJump(bool attack, out Vector3 direction, out float speed)
+        private void PlanJump(bool attack, out Vector3 direction, out float speed, out int hops, out float upSpeed)
         {
+            hops = 0;
             speed = HasTarget ? chaseAirSpeed : patrolAirSpeed;
+            upSpeed = attack ? attackJumpUpSpeed : (HasTarget ? chaseJumpUpSpeed : patrolJumpUpSpeed);
 
             if (!HasTarget)
             {
@@ -611,7 +636,6 @@ namespace CarGame.Combat
 
             Vector3 start = FrontPosition;
 
-            float upSpeed = attack ? attackJumpUpSpeed : chaseJumpUpSpeed;
             float riseDamping = attack ? attackRiseDamping : 0f;
 
             Vector3 toward = SafePlanarDirection(Target.transform.position - start, transform.forward);
@@ -627,6 +651,18 @@ namespace CarGame.Combat
             }
 
             Vector3 lead = Vector3.ProjectOnPlane(PredictTargetPosition(flightTime) - start, Vector3.up);
+
+            // Преследование НЕ задирать: робот не увеличивает высоту и дальность
+            // одного прыжка ради цели. Вместо этого считаем, сколько коротких
+            // прыжков фиксированной дальности chaseHopDistance нужно, чтобы
+            // долететь до упреждённой точки, и летим ими подряд (hops). После
+            // цепочки цель перепроверяется: нет рядом — новый расчёт, есть —
+            // боевой прыжок. Боевой прыжок всегда одиночный: hops = 0.
+            if (!attack)
+            {
+                float remaining = Mathf.Max(0f, lead.magnitude - approachStandoff);
+                hops = Mathf.CeilToInt(remaining / Mathf.Max(1f, chaseHopDistance));
+            }
 
             // Уже стоим вплотную к цели: прыгаем строго вверх. Скорость в
             // сторону тут бессмысленна — робот улетел бы мимо и взорвался в
@@ -657,7 +693,7 @@ namespace CarGame.Combat
             // траектории: там столкновение и есть взрыв.
             float required = attack
                 ? lead.magnitude
-                : Mathf.Max(0f, lead.magnitude - approachStandoff);
+                : Mathf.Min(lead.magnitude, chaseHopDistance);
 
             speed = Mathf.Clamp(required / flightTime, minJumpAirSpeed, maxJumpAirSpeed);
         }
