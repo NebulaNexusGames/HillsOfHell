@@ -53,6 +53,11 @@ namespace CarGame.Combat
         [Tooltip("Атака")]
         [SerializeField] private string attackState = "Attack";
 
+        // Кэш типов параметров AnimatorController (Bool == 4). Пересобирается
+        // при смене контроллера, чтобы не читать animator.parameters каждый кадр.
+        private AnimatorControllerParameter[] cachedParameters;
+        private RuntimeAnimatorController cachedController;
+
         [Header("Лут")]
         [SerializeField] private LootEntry[] loot = new LootEntry[0];
         [Tooltip("Насколько разлетаются выпавшие предметы, м")]
@@ -195,14 +200,15 @@ namespace CarGame.Combat
             float speed = new Vector2(velocity.x, velocity.z).magnitude;
 
             // SwordBot.controller НЕ имеет параметров MoveSpeed/InCombat — он
-            // управляется триггерами Idle / Walk / Run / Attack. Определяем это
-            // динамически: если у контроллера есть хотя бы один из триггеров
-            // состояний, переключаем анимацию ТОЛЬКО через SetTrigger и никогда
-            // не зовём animator.Play() — иначе Play каждый кадр обрывал цикл
-            // шагов и робот «топтался на месте».
-            bool triggerDriven = HasParameter(idleState) || HasParameter(walkState) || HasParameter(runState);
+            // управляется псевдо-триггерами Idle / Walk / Run (тип Bool) и
+            // реальным триггером Attack. Определяем это динамически: если у
+            // контроллера есть хотя бы один параметр состояния, переключаем
+            // анимацию ТОЛЬКО параметрами и никогда не зовём animator.Play() —
+            // иначе Play каждый кадр обрывал цикл шагов и робот «топтался на
+            // месте».
+            bool parameterDriven = IsStateParameter(idleState) || IsStateParameter(walkState) || IsStateParameter(runState);
 
-            if (!triggerDriven)
+            if (!parameterDriven)
             {
                 // Старый путь для контроллеров, живущих на параметрах движения.
                 SetFloat("MoveSpeed", speed);
@@ -241,23 +247,94 @@ namespace CarGame.Combat
                 desired = idleState;
             }
 
-            FireStateTrigger(desired);
+            ApplyState(desired);
         }
 
         /// <summary>
-        /// Шлёт Animator-триггер с именем состояния (Idle/Walk/Run). Триггеры
-        /// в SwordBot.controller условные: переход происходит из текущего
-        /// состояния по этому триггеру, поэтому цикл ходьбы/бега доигрывается
-        /// целиком, а не перезапускается каждый кадр.
+        /// Переключает состояние анимации под текущий тип параметра в
+        /// SwordBot.controller:
+        /// - Bool («псевдо-триггеры» Idle/Walk/Run): выставляем целевой параметр
+        ///   в true, остальные — в false. Переходы в контроллере слушают именно
+        ///   это, цикл ходьбы/бега доигрывается целиком;
+        /// - Trigger (Attack): шлём SetTrigger ровно один раз на смену состояния.
+        ///     Раньше для Bool-параметров вызывали SetTrigger каждый раз при
+        ///     смене состояния — Unity печатал ошибку и состояние не переключалось,
+        ///     из-за чего мечник проигрывал Walk/Run-переходы лишь частично и
+        ///     визуально «топтался на месте».
         /// </summary>
-        private void FireStateTrigger(string state)
+        private void ApplyState(string state)
         {
             if (string.IsNullOrEmpty(state)) return;
-            if (currentState == state) return;
-            if (!HasParameter(state)) return;
 
-            currentState = state;
-            animator.SetTrigger(state);
+            AnimatorControllerParameterType type = GetParameterType(state);
+
+            // Для Bool-состояний флаг целевого состояния выставляем принудительно
+            // каждый кадр: переходы Idle ⇄ Walk в контроллере могут быть
+            // односторонними, а после атаки робот снова бежит к цели — флаг Run
+            // нужно держать поднятым. Иначе аниматор залипал в Attack/Idle и
+            // робот «топтался на месте».
+            if (type == AnimatorControllerParameterType.Bool)
+            {
+                currentState = state;
+                animator.SetBool(state, true);
+                ResetOtherStateBools(state);
+                return;
+            }
+
+            // Триггеры (Attack) шлём ровно один раз на смену состояния.
+            if (currentState == state) return;
+
+            if (type == AnimatorControllerParameterType.Trigger)
+            {
+                currentState = state;
+                animator.SetTrigger(state);
+                ResetOtherStateBools(state);
+                return;
+            }
+
+            // Параметра с таким именем нет — ничего не делаем (не ломаем старый путь).
+        }
+
+        private void ResetOtherStateBools(string except)
+        {
+            string[] states = { idleState, walkState, runState, attackState };
+            for (int i = 0; i < states.Length; i++)
+            {
+                string s = states[i];
+                if (string.IsNullOrEmpty(s) || s == except) continue;
+                if (GetParameterType(s) == AnimatorControllerParameterType.Bool)
+                    animator.SetBool(s, false);
+            }
+        }
+
+        private AnimatorControllerParameterType GetParameterType(string name)
+        {
+            if (animator == null || string.IsNullOrEmpty(name)) return default;
+
+            RuntimeAnimatorController controller = animator.runtimeAnimatorController;
+            if (controller == null) return default;
+
+            if (cachedParameters == null || cachedController != controller)
+            {
+                cachedController = controller;
+                cachedParameters = controller.parameters;
+            }
+
+            if (cachedParameters == null) return default;
+
+            for (int i = 0; i < cachedParameters.Length; i++)
+            {
+                if (cachedParameters[i].name == name) return cachedParameters[i].type;
+            }
+
+            return default;
+        }
+
+        private bool IsStateParameter(string name)
+        {
+            AnimatorControllerParameterType type = GetParameterType(name);
+            return type == AnimatorControllerParameterType.Bool
+                || type == AnimatorControllerParameterType.Trigger;
         }
 
         private void PlayAttack()
@@ -268,10 +345,9 @@ namespace CarGame.Combat
             // SwordBot.controller переключает атаку триггером "Attack":
             // Idle/Walk/Run → Attack по этому триггеру, Attack → Idle сам.
             // Форсированный Play здесь только сбивал переходы.
-            if (HasParameter(attackState))
+            if (IsStateParameter(attackState))
             {
-                FireTrigger(attackState);
-                currentState = attackState;
+                ApplyState(attackState);
                 attackLockTime = AttackStateLength();
                 return;
             }
