@@ -823,6 +823,18 @@ namespace CarGame.Combat
             velocity.x = lockedJumpDirection.x * lockedJumpSpeed;
             velocity.z = lockedJumpDirection.z * lockedJumpSpeed;
             body.linearVelocity = velocity;
+
+            // Робот всегда повёрнут носом в сторону своего прыжка: Rigidbody с
+            // FreezeRotation сам не довернётся, а однократный FaceDirection в
+            // Launch() доворачивал лишь несколько градусов за кадр — визуально
+            // бот летел «боком». Доворачиваем корпус к зафиксированному курсу
+            // каждый кадр полёта.
+            if (lockedJumpDirection.sqrMagnitude > 0.0001f)
+            {
+                Quaternion look = Quaternion.LookRotation(lockedJumpDirection, Vector3.up);
+                transform.rotation = Quaternion.RotateTowards(
+                    transform.rotation, look, airTurnSpeed * Time.deltaTime);
+            }
         }
 
         private void EnterPhase(JumpPhase next, float duration)
