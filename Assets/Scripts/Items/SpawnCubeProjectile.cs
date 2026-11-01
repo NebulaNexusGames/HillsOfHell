@@ -6,7 +6,12 @@ namespace CarGame.Items
     /// Компонент летящего куба, выброшенного игроком (LMB) из руки или
     /// инвентаря. При столкновении с любым объектом, у которого коллайдер не
     /// включён как триггер, куб исчезает, а спавнящийся моб появляется в точке
-    /// удара с поворотом, совпадающим с направлением полёта.
+    /// удара.
+    ///
+    /// Поворот моба берётся СТРОГО из самого префаба моба (его настройка в
+    /// инспекторе), а не из направления полёта куба: куда игрок кинул куб —
+    /// не должно влиять на то, как повёрнут робот. Моб всегда появляется так,
+    /// как его задал дизайнер префаба.
     ///
     /// Сам куб при этом уничтожается: он «сгорает» при спавне моба. Вариант
     /// руки игрока при этом не трогается — уничтожается только физический
@@ -47,17 +52,10 @@ namespace CarGame.Items
             spawned = true;
 
             Vector3 pos = transform.position;
-            Quaternion rot = Quaternion.identity;
-            if (body != null)
-            {
-                rot = Quaternion.LookRotation(body.linearVelocity.sqrMagnitude > 0.0001f ? body.linearVelocity.normalized : transform.forward);
-            }
-            else
-            {
-                rot = transform.rotation;
-            }
 
-            GameObject mob = Instantiate(mobPrefab, pos, rot);
+            // Поворот — СТРОГО из префаба моба, каким он был задан изначально.
+            // Направление полёта куба на ориентацию робота влиять не должно.
+            GameObject mob = Instantiate(mobPrefab, pos, mobPrefab.transform.rotation);
             if (mob != null) mob.name = mobPrefab.name;
             Destroy(gameObject);
         }
