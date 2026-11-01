@@ -580,6 +580,19 @@ namespace CarGame.Combat
             // Прыгать, не коснувшись земли, робот не может.
             if (!IsGrounded()) return;
 
+            // Цель могла сместиться, пока робот готовился (пауза преследования,
+            // замах). Сначала доворачиваемся строго на цель/курс и только потом
+            // планируем и выполняем отталкивание — иначе боевой прыжок стартовал
+            // бы в сторону, а робот летел боком.
+            FaceDirection(DesiredDirection(true), groundTurnSpeed, Time.deltaTime);
+            Vector3 preJumpFacing = HasTarget
+                ? SafePlanarDirection(Target.transform.position - FrontPosition, transform.forward)
+                : SafePlanarDirection(DesiredDirection(false), transform.forward);
+            if (preJumpFacing.sqrMagnitude > 0.0001f)
+            {
+                transform.rotation = Quaternion.LookRotation(preJumpFacing, Vector3.up);
+            }
+
             PlanJump(attack, out Vector3 direction, out float speed, out int hops, out float upSpeed);
 
             remainingHops = attack ? 0 : hops;
@@ -588,7 +601,19 @@ namespace CarGame.Combat
             lockedJumpSpeed = speed;
 
             // Разворот делаем сразу при отталкивании: в полёте доворачивать уже нельзя.
-            FaceDirection(lockedJumpDirection, airTurnSpeed, Time.deltaTime);
+            // Раньше здесь стоял FaceDirection — поворот на airTurnSpeed за ОДИН
+            // кадр (~7 градусов): робот стартовал боком к курсу и весь прыжок
+            // летел «боком». Теперь ориентация ставится мгновенно по направлению
+            // прыжка; если направление нулевое (прыжок строго вверх), целимся
+            // хотя бы на цель, чтобы не оставаться развёрнутым кое-как.
+            Vector3 facing = lockedJumpDirection.sqrMagnitude > 0.0001f
+                ? lockedJumpDirection
+                : SafePlanarDirection(DesiredDirection(false), transform.forward);
+
+            if (facing.sqrMagnitude > 0.0001f)
+            {
+                transform.rotation = Quaternion.LookRotation(Vector3.ProjectOnPlane(facing, Vector3.up).normalized, Vector3.up);
+            }
 
             if (body != null)
             {

@@ -20,6 +20,8 @@ namespace CarGame.Combat
         [SerializeField] private float loseTargetMemory = 4f;
         [Tooltip("Требовать для захвата и удержания цели сектор обзора перед роботом. Мечник: погоня только если реально увидел. 0 — без ограничения угла")]
         [SerializeField] private float sightAngleDegrees = 120f;
+        [Tooltip("Радиус зоны вокруг робота, внутри которой цель замечается с любой стороны (даже за спиной). 0 — отключено")]
+        [SerializeField] private float nearDetectionRadius = 8f;
         [Tooltip("Проверять, дотягивается ли робот до цели по высоте и расстоянию. Выключи — будет преследовать любую цель в зоне видимости")]
         [SerializeField] private bool requireReachableTarget = true;
         [Tooltip("Высота цели над её точкой отсчёта, м. Обычно центр груди или капота")]
@@ -339,26 +341,49 @@ namespace CarGame.Combat
 
         private bool TryAcquireTarget()
         {
+            if (player == null) player = FindPlayer();
             if (player == null) return false;
 
-            Health candidate = player.IsInCar && player.CurrentVehicle != null
-                ? player.CurrentVehicle.Health
-                : player.Health;
+            Health onFoot = player.Health;
+            Health vehicle = player.CurrentVehicle != null ? player.CurrentVehicle.Health : null;
 
-            if (candidate == null || candidate.IsDead) return false;
+            Health best = null;
+            float bestDistance = float.MaxValue;
 
-            Vector3 toTarget = candidate.transform.position - transform.position;
-            if (toTarget.magnitude > DetectRange) return false;
-            if (!IsTargetReachable(candidate)) return false;
+            // Все роботы считают целью не только игрока: если игрок в машине
+            // (или его рядом нет, а машина есть) — целью становится машина,
+            // и боты damages её. Пешего игрока тоже никто не отменял: из двух
+            // доступных целей берётся та, что ближе.
+            TryConsiderTarget(onFoot, ref best, ref bestDistance);
+            TryConsiderTarget(vehicle, ref best, ref bestDistance);
 
-            // Захват цели — только если она в секторе обзора перед роботом.
-            if (!IsWithinSightCone(candidate)) return false;
-
-            if (requireLineOfSight && !HasLineOfSight(candidate)) return false;
+            if (best == null) return false;
 
             lastSeenTime = Time.time;
-            Target = candidate;
+            Target = best;
             return true;
+        }
+
+        /// <summary>
+        /// Проверяет кандидата на роль цели (игрок или машина) и, если он
+        /// проходит все проверки и ближе текущего лучшего, делает его целью.
+        /// </summary>
+        private void TryConsiderTarget(Health candidate, ref Health best, ref float bestDistance)
+        {
+            if (candidate == null || candidate.Equals(null) || candidate.IsDead) return;
+
+            Vector3 toTarget = candidate.transform.position - transform.position;
+            if (toTarget.magnitude > DetectRange) return;
+            if (toTarget.magnitude >= bestDistance) return;
+            if (!IsTargetReachable(candidate)) return;
+
+            // Захват цели — только если она в секторе обзора перед роботом.
+            if (!IsWithinSightCone(candidate)) return;
+
+            if (requireLineOfSight && !HasLineOfSight(candidate)) return;
+
+            best = candidate;
+            bestDistance = toTarget.magnitude;
         }
 
         protected virtual bool IsTargetReachable(Health candidate)
@@ -408,9 +433,19 @@ namespace CarGame.Combat
         /// Находится ли цель в горизонтальном секторе обзора перед роботом
         /// (sightAngleDegrees — полный угол). 0 или больше 179 — без ограничения.
         /// </summary>
-        protected bool IsWithinSightCone(Health candidate)
+        protected virtual bool IsWithinSightCone(Health candidate)
         {
             if (candidate == null) return false;
+
+            // «Зона видимости» робота: цель внутри этого радиуса вокруг него
+            // замечается с любой стороны, даже за спиной. Вне зоны работает
+            // обычный сектор обзора.
+            if (nearDetectionRadius > 0f)
+            {
+                Vector3 toCandidate = candidate.transform.position - transform.position;
+                if (toCandidate.sqrMagnitude <= nearDetectionRadius * nearDetectionRadius) return true;
+            }
+
             if (sightAngleDegrees <= 0f || sightAngleDegrees >= 179f) return true;
 
             Vector3 toTarget = candidate.transform.position - transform.position;

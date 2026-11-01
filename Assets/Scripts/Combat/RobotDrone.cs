@@ -118,6 +118,11 @@ namespace CarGame.Combat
         private bool spawnOrientationApplied;
         private Vector3 patrolTarget;
         private bool patrolTargetValid;
+        // Дрон обязан лететь постоянно: вместо «зависания на точке» он держит
+        // непрерывный облёт — долетел до точки, плавно свернул к новой, не
+        // останавливаясь. Флаг говорит, что дрон уже «облизывает» орбиту вокруг
+        // текущей точки патруля и ещё не выбрал следующую цель полёта.
+        private bool patrolOrbiting;
         private float patrolHoldUntil;
         private bool engaged;
         private bool returningHome;
@@ -622,15 +627,17 @@ namespace CarGame.Combat
         }
 
         /// <summary>
-        /// Точка патруля рядом со спавном. Дрон долетает до неё, виснет patrolWaitTime,
-        /// потом выбирает новую. Пока новая точка не выбрана — держит позицию.
+        /// Точка патруля рядом со спавном. Дрон долетает до неё и НЕ зависает:
+        /// по достижении он переходит на короткую орбиту вокруг точки (плавно
+        /// сворачивает, не теряя скорость) и сразу выбирает следующую точку —
+        /// полёт непрерывен. Пауза на месте (patrolHoldUntil) больше не
+        /// используется: по требованию дизайнера дрон во время патрулирования
+        /// останавливаться не должен.
         /// </summary>
         private Vector3 ResolvePatrolPoint()
         {
             if (!patrolTargetValid)
             {
-                if (Time.time < patrolHoldUntil) return FrontPosition;
-
                 Vector2 offset = Random.insideUnitCircle * PatrolRadius;
                 // Высота точки патруля — штатная patrolAltitude над землёй, а не
                 // y спавна: иначе точка лежит на уровне земли и дрон тянет нос
@@ -647,15 +654,36 @@ namespace CarGame.Combat
                     groundY + Mathf.Max(patrolAltitude, minGroundHeight),
                     SpawnPoint.z + offset.y);
                 patrolTargetValid = true;
+                patrolOrbiting = false;
             }
 
             Vector3 flat = Vector3.ProjectOnPlane(patrolTarget - FrontPosition, Vector3.up);
             bool heightReached = Mathf.Abs(patrolTarget.y - FrontPosition.y) <= PatrolPointTolerance;
             if (flat.magnitude <= PatrolPointTolerance && heightReached)
             {
-                patrolTargetValid = false;
-                patrolHoldUntil = Time.time + PatrolWaitTime;
-                return FrontPosition;
+                // Долетели: вместо остановки — облёт точки, пока не придёт
+                // очередь выбрать новый маршрут. Орбита задаёт непрерывную
+                // боковую составляющую скорости, дрон не висит на месте.
+                patrolOrbiting = true;
+                patrolHoldUntil = Time.time + Mathf.Max(0.8f, PatrolWaitTime);
+            }
+
+            if (patrolOrbiting)
+            {
+                // Плавно кружим вокруг точки радиусом толерантности; как только
+                // «пауза» истекла — сбрасываем цель и в следующем кадре
+                // выбираем новую точку, продолжая лететь без остановки.
+                if (Time.time >= patrolHoldUntil)
+                {
+                    patrolTargetValid = false;
+                    patrolOrbiting = false;
+                }
+
+                orbitAngle += orbitSpeed * Time.deltaTime;
+                Vector3 ring = patrolTarget
+                    + Quaternion.AngleAxis(Mathf.Rad2Deg * orbitAngle, Vector3.up) * Vector3.right
+                      * Mathf.Max(PatrolPointTolerance, 1.2f);
+                return ring;
             }
 
             return patrolTarget;
