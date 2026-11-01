@@ -171,6 +171,8 @@ namespace CarGame.Combat
             if (direction.sqrMagnitude > 0.0001f) FaceDirection(direction, turnSpeed, Time.deltaTime);
 
             // Пауза на точке патруля: робот обязан встать, а не «идти» на месте.
+            // Вне паузы мечник реально шагает к точке маршрута (анимация Walk),
+            // дошёл «N шагов» — встаёт на restDuration секунд (анимация Idle).
             bool mayMove = PatrolAllowsMove();
             float speed = !mayMove || striking ? 0f : engaged ? moveSpeed : PatrolSpeed;
             Move(mayMove ? direction : Vector3.zero, speed);
@@ -196,9 +198,6 @@ namespace CarGame.Combat
             hadTarget = engaged;
             if (animator == null) return;
 
-            Vector3 velocity = body != null ? body.linearVelocity : Vector3.zero;
-            float speed = new Vector2(velocity.x, velocity.z).magnitude;
-
             // SwordBot.controller НЕ имеет параметров MoveSpeed/InCombat — он
             // управляется псевдо-триггерами Idle / Walk / Run (тип Bool) и
             // реальным триггером Attack. Определяем это динамически: если у
@@ -211,6 +210,8 @@ namespace CarGame.Combat
             if (!parameterDriven)
             {
                 // Старый путь для контроллеров, живущих на параметрах движения.
+                Vector3 velocity = body != null ? body.linearVelocity : Vector3.zero;
+                float speed = new Vector2(velocity.x, velocity.z).magnitude;
                 SetFloat("MoveSpeed", speed);
                 SetBool("InCombat", engaged);
                 animator.speed = 1f;
@@ -226,8 +227,14 @@ namespace CarGame.Combat
 
             animator.speed = 1f;
 
-            // Приоритеты: атака уже запущена триггером Attack и сама вернёт в
-            // Idle переходом контроллера. Здесь выбираем только стойку/ходьбу/бег.
+            // Механика мечника: два состояния ИИ.
+            // Idle-состояние: патрулирование — идёт анимацией Walk, после
+            // рандомного числа шагов встаёт (пауза маршрута) — анимация Idle.
+            // Атака: увидел цель — бежит к ней (Run), догнал — останавливается
+            // и бьёт (Attack). Выбор состояния идёт ПОЛНОСТЬЮ по логике ИИ, а
+            // НЕ по замеренной скорости: раньше скорость на переходе Idle⇄Walk
+            // проседала ниже порога и аниматор каждую секунду переклинивало
+            // между состояниями.
             string desired;
             if (engaged)
             {
@@ -236,14 +243,14 @@ namespace CarGame.Combat
                 // атаку инициирует блок Strike выше.
                 desired = runState;
             }
-            else if (speed > walkThreshold)
+            else if (PatrolAllowsMove())
             {
                 // Патрулирование: идём анимацией Walk.
                 desired = walkState;
             }
             else
             {
-                // Пауза на 5 секунд / простоял после потери цели — Idle.
+                // Пауза на restDuration секунд / простоял после потери цели — Idle.
                 desired = idleState;
             }
 
@@ -254,8 +261,11 @@ namespace CarGame.Combat
         /// Переключает состояние анимации под текущий тип параметра в
         /// SwordBot.controller:
         /// - Bool («псевдо-триггеры» Idle/Walk/Run): выставляем целевой параметр
-        ///   в true, остальные — в false. Переходы в контроллере слушают именно
-        ///   это, цикл ходьбы/бега доигрывается целиком;
+        ///   в true, остальные — в false. Флаг ставится ОДИН РАЗ на смену
+        ///   состояния: переходы в контроллере мгновенные (duration 0), и если
+        ///   держать флаг поднятым каждый кадр, завершающий переход (например
+        ///   Attack→Idle) тут же подхватывал поднятый флаг и возвращал обратно —
+        ///   аниматор переклинивало между Idle и Run каждую секунду;
         /// - Trigger (Attack): шлём SetTrigger ровно один раз на смену состояния.
         ///     Раньше для Bool-параметров вызывали SetTrigger каждый раз при
         ///     смене состояния — Unity печатал ошибку и состояние не переключалось,
@@ -266,29 +276,25 @@ namespace CarGame.Combat
         {
             if (string.IsNullOrEmpty(state)) return;
 
+            // Смена состояния = ровно одно событие в аниматор. Пока desired не
+            // изменился, аниматор не трогаем: цикл Walk/Run доигрывается целиком.
+            if (currentState == state) return;
+
             AnimatorControllerParameterType type = GetParameterType(state);
 
-            // Для Bool-состояний флаг целевого состояния выставляем принудительно
-            // каждый кадр: переходы Idle ⇄ Walk в контроллере могут быть
-            // односторонними, а после атаки робот снова бежит к цели — флаг Run
-            // нужно держать поднятым. Иначе аниматор залипал в Attack/Idle и
-            // робот «топтался на месте».
             if (type == AnimatorControllerParameterType.Bool)
             {
                 currentState = state;
-                animator.SetBool(state, true);
                 ResetOtherStateBools(state);
+                animator.SetBool(state, true);
                 return;
             }
-
-            // Триггеры (Attack) шлём ровно один раз на смену состояния.
-            if (currentState == state) return;
 
             if (type == AnimatorControllerParameterType.Trigger)
             {
                 currentState = state;
-                animator.SetTrigger(state);
                 ResetOtherStateBools(state);
+                animator.SetTrigger(state);
                 return;
             }
 
