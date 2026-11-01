@@ -55,6 +55,8 @@ namespace CarGame.Combat
 
         // Кэш типов параметров AnimatorController (Bool == 4). Пересобирается
         // при смене контроллера, чтобы не читать animator.parameters каждый кадр.
+        // Внимание: брать параметры нужно из Animator.parameters (AnimatorControllerParameter[]),
+        // а не из RuntimeAnimatorController — у последнего свойства parameters нет.
         private AnimatorControllerParameter[] cachedParameters;
         private RuntimeAnimatorController cachedController;
 
@@ -324,10 +326,13 @@ namespace CarGame.Combat
             RuntimeAnimatorController controller = animator.runtimeAnimatorController;
             if (controller == null) return AnimatorControllerParameterType.Float;
 
+            // У RuntimeAnimatorController свойства parameters НЕ существует —
+            // список параметров доступен только через Animator.parameters.
+            // Кэшируем его, пересобирая только при смене контроллера.
             if (cachedParameters == null || cachedController != controller)
             {
                 cachedController = controller;
-                cachedParameters = controller.parameters;
+                cachedParameters = animator.parameters;
             }
 
             if (cachedParameters == null) return AnimatorControllerParameterType.Float;
