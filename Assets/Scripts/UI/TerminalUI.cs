@@ -186,11 +186,13 @@ namespace CarGame.UI
         /// SceneManager.LoadScene, и без сброса этого флага эталон навсегда
         /// остался бы снятым с первого запуска (в т.ч. с созданного кодом
         /// экземпляра), а панель после рестарта выглядела бы не так, как в
-        /// проекте.
+        /// проекте. Вместе с флагом очищается и сам эталон — иначе остаточные
+        /// значения прошлых забегов могли бы «просочиться» в новую панель.
         /// </summary>
         public static void AllowRebase()
         {
             sceneDefaultsCaptured = false;
+            sceneDefaults = default;
         }
 
         // Флаг: этот экземпляр создан кодом (Show), а не лежит в сцене. Такие
@@ -199,16 +201,29 @@ namespace CarGame.UI
 
         /// <summary>
         /// Снимает эталон настроек панели с первого экземпляра, загруженного из
-        /// файла сцены Unity (т.е. именно таким, каким его настроил автор в
-        /// инспекторе). Вызывается один раз за игру из SceneResetter до того,
-        /// как код успеет что-либо изменить. Все последующие пересоздания панели
-        /// после рестарта сцены сбрасываются к этому эталону.
+        /// файла сцены/prefab'а Unity (т.е. именно таким, каким его настроил
+        /// автор в инспекторе). Вызывается один раз за забег из SceneResetter
+        /// до того, как код успеет что-либо изменить. Все последующие
+        /// пересоздания панели после рестарта сцены сбрасываются к этому
+        /// эталону.
+        ///
+        /// Раньше эталон снимался только со статического Instance. Это ломало
+        /// песочницу: если на первом кадре игрок уже стоял у другого терминала
+        /// (обычного), его панель успевала стать Instance и быть созданной
+        /// кодом — с дефолтными значениями полей C# (окно шире экрана) и без
+        /// клипа. Эталон захватывался именно оттуда, и после смерти все
+        /// панели — включая SandboxTerminal с настроенными размерами и музыкой
+        /// в prefab'е — откатывались к этим пустым настройкам («с шансом»:
+        /// зависит от того, у какого терминала игрок был на первом кадре).
+        /// Теперь источник эталона ищется явно среди сценных объектов.
         /// </summary>
         public static void CaptureFromSceneObject()
         {
-            TerminalUI view = Instance;
-            if (view == null || view.createdAtRuntime) return; // эталон снимается только со сценного объекта
             if (sceneDefaultsCaptured) return;
+
+            TerminalUI view = FindSceneReference();
+            if (view == null) return;
+
             sceneDefaultsCaptured = true;
             sceneDefaults = new PanelSnapshot
             {
@@ -239,15 +254,79 @@ namespace CarGame.UI
             };
         }
 
+        /// <summary>
+        /// Ищет настоящий сценный объект панели — тот, что пришёл из файла
+        /// сцены/prefab'а вместе со своими сериализованными настройками.
+        /// Панели, созданные кодом (Show), помечены createdAtRuntime и в
+        /// качестве эталона не годятся. Если готового эталона пока нет ни у
+        /// кого, приоритет отдаётся объекту с наиболее полной конфигурацией
+        /// (настроены размеры окна и добавлена музыка) — именно такой панелью
+        /// является SandboxTerminal в проекте.
+        /// </summary>
+        private static TerminalUI FindSceneReference()
+        {
+            TerminalUI[] all = UnityEngine.Object.FindObjectsByType<TerminalUI>(
+                FindObjectsInactive.Include, FindObjectsSortMode.None);
+
+            TerminalUI best = null;
+            int bestScore = -1;
+
+            for (int i = 0; i < all.Length; i++)
+            {
+                TerminalUI candidate = all[i];
+                if (candidate == null) continue;
+                if (candidate.createdAtRuntime) continue;
+                if (!candidate.gameObject.scene.IsValid()) continue;
+
+                int score = ScoreConfiguration(candidate);
+                if (score > bestScore)
+                {
+                    bestScore = score;
+                    best = candidate;
+                }
+            }
+
+            return best;
+        }
+
+        // Насколько панель похожа на настроенную автором, а не на болванку:
+        // собственные размеры окна и добавленный клип.
+        private static int ScoreConfiguration(TerminalUI view)
+        {
+            int score = 0;
+            if (Mathf.Abs(view.windowWidth - TerminalLayout.WindowWidth * 1.16f) > 0.0001f) score++;
+            if (Mathf.Abs(view.windowHeight - TerminalLayout.WindowHeight * 1.02f) > 0.0001f) score++;
+            if (view.interfaceMusic != null) score++;
+            return score;
+        }
+
         private void Awake()
         {
-            if (Instance != null && Instance != this) { Destroy(this); return; }
-            Instance = this;
-            if (createdByCodePending)
+            // Сигнал о создании кодом должен обработаться ДО присвоения
+            // Instance: иначе AddComponent внутри Show() увидел бы старый
+            // Instance, уничтожил бы новую панель и оставил ссылку на мёртвый
+            // объект — следующие Show() возвращали бы «зombie», и настройки
+            // панели после смерти откатывались бы к пустым.
+            bool madeByCode = createdByCodePending;
+            createdByCodePending = false;
+
+            if (Instance != null && Instance != this)
             {
-                createdAtRuntime = true;
-                createdByCodePending = false;
+                TerminalUI stale = Instance;
+                Destroy(stale.gameObject);
+                if (stale.rig != null) Destroy(stale.rig.gameObject);
+                Instance = null;
             }
+
+            if (Instance == null) Instance = this;
+
+            if (madeByCode) createdAtRuntime = true;
+
+            // Эталон ещё не снят (первый запуск, либо сцена загрузилась раньше,
+            // чем SceneResetter успел подписаться) — снимаем его прямо сейчас,
+            // пока поле не изменил ни один рантайм-код.
+            if (!createdAtRuntime && !sceneDefaultsCaptured) CaptureFromSceneObject();
+
             if (createdAtRuntime) ApplySceneDefaults();
             frameColor = TerminalTheme.IdleCell;
             hoverColor = TerminalTheme.HoverCell;
