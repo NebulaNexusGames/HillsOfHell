@@ -211,10 +211,17 @@ namespace CarGame.Combat
             // промахнётся.
             yield return new WaitForFixedUpdate();
 
-            for (int attempt = 0; attempt < 12 && !IsGroundedBelow(); attempt++)
+            // Пока зонд вниз видит пол в пределах запаса minGroundHeight — дрон
+            // лежит брюхом на земле (или заспавнился в полу): поднимаем его
+            // ступенями вверх, пока не окажется на штатной высоте висения.
+            for (int attempt = 0; attempt < 24 && IsGroundedBelow(); attempt++)
             {
-                transform.position += Vector3.up * 0.5f;
-                yield return null;
+                Vector3 position = transform.position;
+                position.y += 0.5f;
+                transform.position = position;
+                if (body != null) body.linearVelocity = Vector3.zero;
+                velocity = Vector3.zero;
+                yield return new WaitForFixedUpdate();
             }
         }
 
@@ -282,6 +289,10 @@ namespace CarGame.Combat
             if (health == null || health.IsDead) return;
 
             BaseUpdate();
+
+            // Жёсткий пол и потолок высоты: дрон никогда не волочится брюхом по
+            // земле и сам протискивается в низкие проходы.
+            ClampAltitude();
 
             if (HasTarget)
             {

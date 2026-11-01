@@ -62,6 +62,8 @@ namespace CarGame.Combat
         [SerializeField] private float prepareRange = 9f;
         [Tooltip("Насколько быстро робот доворачивает в полёте, градусов в секунду")]
         [SerializeField] private float airTurnSpeed = 420f;
+        [Tooltip("Дальность одного преследующего прыжка, м. Робот НЕ задирает прыжок ради дальности до цели: он считает, сколько коротких ПРЫЖКОВ этой фиксированной дальности нужно, чтобы долететь до цели, и летит ими подряд. После каждой цепочки цель перепроверяется заново.")]
+        [SerializeField] private float chaseHopDistance = 6f;
         [Tooltip("Насколько быстро робот доворачивает на земле, градусов в секунду")]
         [SerializeField] private float groundTurnSpeed = 640f;
         [Tooltip("Игнорировать ли препятствия. Включи только на открытой местности")]
@@ -557,9 +559,7 @@ namespace CarGame.Combat
             // Прыгать, не коснувшись земли, робот не может.
             if (!IsGrounded()) return;
 
-            PlanJump(attack, out Vector3 direction, out float speed);
-
-            float upSpeed = attack ? attackJumpUpSpeed : HasTarget ? chaseJumpUpSpeed : patrolJumpUpSpeed;
+            PlanJump(attack, out Vector3 direction, out float speed, out int hops);
 
             lockedJumpDirection = direction;
             lockedJumpSpeed = speed;
