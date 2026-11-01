@@ -294,6 +294,9 @@ namespace CarGame.Combat
             {
                 currentState = state;
                 ResetOtherStateBools(state);
+                // Сброс до установки: иначе «залипший» с прошлых циклов триггер
+                // срабатывал повторно и аниматор клинил между состояниями.
+                animator.ResetTrigger(state);
                 animator.SetTrigger(state);
                 return;
             }
@@ -315,10 +318,11 @@ namespace CarGame.Combat
 
         private AnimatorControllerParameterType GetParameterType(string name)
         {
-            if (animator == null || string.IsNullOrEmpty(name)) return default;
+            if (animator == null || string.IsNullOrEmpty(name))
+                return AnimatorControllerParameterType.Float;
 
             RuntimeAnimatorController controller = animator.runtimeAnimatorController;
-            if (controller == null) return default;
+            if (controller == null) return AnimatorControllerParameterType.Float;
 
             if (cachedParameters == null || cachedController != controller)
             {
@@ -326,14 +330,14 @@ namespace CarGame.Combat
                 cachedParameters = controller.parameters;
             }
 
-            if (cachedParameters == null) return default;
+            if (cachedParameters == null) return AnimatorControllerParameterType.Float;
 
             for (int i = 0; i < cachedParameters.Length; i++)
             {
                 if (cachedParameters[i].name == name) return cachedParameters[i].type;
             }
 
-            return default;
+            return AnimatorControllerParameterType.Float;
         }
 
         private bool IsStateParameter(string name)
