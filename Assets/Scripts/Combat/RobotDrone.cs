@@ -48,6 +48,8 @@ namespace CarGame.Combat
         [SerializeField] private float ceilingProbe = 3.5f;
         [Tooltip("Запас от потолка, м")]
         [SerializeField] private float ceilingClearance = 0.45f;
+        [Tooltip("Минимальная высота корпуса над землёй. Дрон не должен касаться пола: после спавна он это проверяет и поднимается, а ниже этой отметки не опускается никогда")]
+        [SerializeField] private float minGroundHeight = 1.2f;
 
         [Header("Стрельба")]
         [Tooltip("Дальность стрельбы, м")]
@@ -193,6 +195,80 @@ namespace CarGame.Combat
             orbitAngle = orbitPhase * Mathf.Deg2Rad;
             BaseAwake();
             CacheNoseAxis();
+
+            StartCoroutine(StartHoverCheck());
+        }
+
+        /// <summary>
+        /// После спавна дрон проверяет, не касается ли он земли, и поднимается
+        /// на безопасную высоту. Дальше касаться пола ему не даёт ClampAltitude
+        /// в каждом кадре.
+        /// </summary>
+        private IEnumerator StartHoverCheck()
+        {
+            // Ждём физический кадр: в первый кадр после Instantiate коллайдеры
+            // окружения ещё могут не попасть в broadphase, и зонд вниз
+            // промахнётся.
+            yield return new WaitForFixedUpdate();
+
+            for (int attempt = 0; attempt < 12 && !IsGroundedBelow(); attempt++)
+            {
+                transform.position += Vector3.up * 0.5f;
+                yield return null;
+            }
+        }
+
+        /// <summary>
+        /// Есть ли твёрдая поверхность прямо под корпусом в пределах запаса
+        /// minGroundHeight. Триггеры (зоны, датчики) поверхностью не считаются.
+        /// </summary>
+        private bool IsGroundedBelow()
+        {
+            float probe = minGroundHeight + 0.4f;
+            return Physics.Raycast(transform.position, Vector3.down, probe, crashMask, QueryTriggerInteraction.Ignore);
+        }
+
+        /// <summary>
+        /// Полётный потолок высоты: ниже minGroundHeight над землёй дрон не
+        /// опускается никогда — иначе он волочится брюхом по полу и цепляет
+        /// наземные препятствия. Потолок наоборот: прижимается вниз, чтобы
+        /// протиснуться в низкий проход, в который дронуallowed залететь.
+        /// </summary>
+        private void ClampAltitude()
+        {
+            if (crashing) return;
+
+            float floorProbe = minGroundHeight + 0.6f;
+            if (Physics.Raycast(transform.position, Vector3.down, out RaycastHit ground, floorProbe, crashMask, QueryTriggerInteraction.Ignore))
+            {
+                float minY = ground.point.y + minGroundHeight;
+                if (transform.position.y < minY)
+                {
+                    Vector3 position = transform.position;
+                    position.y = Mathf.MoveTowards(position.y, minY, moveSpeed * Time.deltaTime);
+                    transform.position = position;
+
+                    if (velocity.y < 0f) velocity.y = 0f;
+                    if (body != null && body.isKinematic == false) body.linearVelocity = velocity;
+                }
+            }
+
+            if (ceilingProbe <= 0.05f) return;
+
+            float radius = crashRadius * 0.8f;
+            if (Physics.SphereCast(transform.position, radius, Vector3.up, out RaycastHit ceiling, ceilingProbe, crashMask, QueryTriggerInteraction.Ignore))
+            {
+                float maxY = ceiling.point.y - radius - ceilingClearance;
+                if (transform.position.y > maxY)
+                {
+                    Vector3 position = transform.position;
+                    position.y = Mathf.Max(position.y - moveSpeed * Time.deltaTime, maxY);
+                    transform.position = position;
+
+                    if (velocity.y > 0f) velocity.y = 0f;
+                    if (body != null && !body.isKinematic) body.linearVelocity = velocity;
+                }
+            }
         }
 
         private void Update()
