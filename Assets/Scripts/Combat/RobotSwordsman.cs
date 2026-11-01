@@ -254,7 +254,20 @@ namespace CarGame.Combat
                 Voice.Step(new Vector3(body.linearVelocity.x, 0f, body.linearVelocity.z), engaged);
 
             if (!engaged || Target == null) return;
-            if (distance > attackRange) return;
+
+            // Машина — крупный объект: Health на её корне, а центр корпуса может
+            // быть дальше attackRange даже когда робот стоит вплотную к капоту.
+            // Для занятой машины считаем дистанцию до ближайшей точки коллайдера.
+            float strikeDistance = distance;
+            if (IsOccupiedVehicleTarget())
+            {
+                Collider carCollider = Target.GetComponent<Collider>();
+                if (carCollider == null) carCollider = Target.GetComponentInChildren<Collider>();
+                if (carCollider != null)
+                    strikeDistance = Vector3.Distance(FrontPosition + Vector3.up, carCollider.ClosestPoint(FrontPosition + Vector3.up));
+            }
+
+            if (strikeDistance > EffectiveStrikeRange(Target)) return;
             if (Time.time < nextAttackTime) return;
 
             nextAttackTime = Time.time + attackCooldown;
@@ -562,8 +575,42 @@ namespace CarGame.Combat
             if (car == null) car = Target.GetComponentInParent<CarController>();
             if (car == null) return false;
 
+            // Вариант 1: у машины есть за рулём конкретный PlayerController.
             PlayerController driver = car.Driver;
-            return driver != null && !driver.Equals(null);
+            if (driver != null && !driver.Equals(null)) return true;
+
+            // Вариант 2: даже если ссылка на водителя не проставилась (рестарт
+            // забега, пересборка сцены), сам Health цели принадлежит машине —
+            // считаем её занятой, пока игрок физически находится в её объёме:
+            // именно так «игрок в машине» определяется для ботов стабильно.
+            return IsPlayerInsideCarBounds(car);
+        }
+
+        /// <summary>
+        /// Игрок внутри габаритов машины (плюс небольшой допуск). Используется
+        /// как резервный признак занятости: CharacterController игрока при
+        /// посадке телепортируется в точку сиденья внутри корпуса машины.
+        /// </summary>
+        private bool IsPlayerInsideCarBounds(CarController car)
+        {
+            if (car == null || car.Equals(null)) return false;
+
+            PlayerController player = FindPlayer();
+            if (player == null || player.Equals(null)) return false;
+
+            // Игрок уже официально сидит в какой-то машине: если это наша цель —
+            // машина занята, если в другой — эта считается свободной.
+            if (player.IsInCar) return false;
+
+            Collider carCollider = car.GetComponent<Collider>();
+            if (carCollider == null) carCollider = car.GetComponentInChildren<Collider>();
+            if (carCollider == null) return false;
+
+            Bounds bounds = carCollider.bounds;
+            bounds.Expand(0.5f);
+
+            Vector3 feet = player.transform.position + Vector3.up * 0.4f;
+            return bounds.Contains(feet);
         }
 
         /// <summary>
@@ -673,20 +720,57 @@ namespace CarGame.Combat
             body.linearVelocity = velocity;
         }
 
+        /// <summary>
+        /// Дистанция удара. У машины Health висит на её корне, а габариты велики:
+        /// расстояние до центра корпуса легко превышает attackRange, из-за чего
+        /// удар по занятой машине никогда не срабатывал (робот «бил воздух»).
+        /// Для машины добавляем половину её диагонали в плоскости XZ.
+        /// </summary>
+        private float EffectiveStrikeRange(Health target)
+        {
+            if (target == null) return attackRange;
+
+            Collider bodyCollider = target.GetComponent<Collider>();
+            if (bodyCollider == null)
+                bodyCollider = target.GetComponentInChildren<Collider>();
+
+            if (bodyCollider == null) return attackRange;
+
+            Bounds bounds = bodyCollider.bounds;
+            float halfFootprint = new Vector3(bounds.size.x, 0f, bounds.size.z).magnitude * 0.5f;
+
+            return attackRange + halfFootprint;
+        }
+
         private void Strike(Health target, float distance)
         {
             Vector3 origin = FrontPosition + Vector3.up;
             Vector3 point = target.transform.position + Vector3.up;
 
+            bool occupiedCar = IsOccupiedVehicleTarget();
+
             // Машина с игроком внутри — цель: бьём по ней при любом касании,
             // Linecast-проверку «не сквозь стену» для неё пропускаем (корпус
             // машины всегда перекрывает луч). Пустая машина/препятства — как раньше.
-            if (!IsOccupiedVehicleTarget())
+            if (!occupiedCar)
             {
                 if (Physics.Linecast(origin, point, out RaycastHit hit, ~0, QueryTriggerInteraction.Ignore)
                     && !hit.collider.transform.IsChildOf(target.transform)
                     && !hit.collider.transform.IsChildOf(transform))
                     return;
+            }
+            else
+            {
+                // Занятая машина: берём ближайшую точку на её коллайдере вместо
+                // центра корпуса — так удар проходит и у короткого меча.
+                Collider bodyCollider = target.GetComponent<Collider>();
+                if (bodyCollider == null) bodyCollider = target.GetComponentInChildren<Collider>();
+                if (bodyCollider != null)
+                {
+                    Vector3 closest = bodyCollider.ClosestPoint(origin);
+                    if ((closest - origin).sqrMagnitude <= EffectiveStrikeRange(target) * EffectiveStrikeRange(target))
+                        point = closest + Vector3.up * 0.2f;
+                }
             }
 
             float damage = attackDamage;

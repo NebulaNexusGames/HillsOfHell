@@ -82,11 +82,13 @@ namespace CarGame.Player
         }
 
         private PlayerController controller;
+        private CharacterController body;
         private Health health;
         private Transform cachedTransform;
         private Vector3 lastStepPosition;
         private AudioClip generatedJump;
         private AudioClip generatedDamage;
+        private AudioClip generatedDefaultStep;
 
         private readonly System.Collections.Generic.List<GeneratedStep> generatedSteps = new System.Collections.Generic.List<GeneratedStep>();
 
@@ -95,6 +97,7 @@ namespace CarGame.Player
             cachedTransform = transform;
 
             controller = GetComponent<PlayerController>();
+            body = GetComponent<CharacterController>();
             health = GetComponent<Health>();
 
             if (source == null) source = GetComponent<AudioSource>();
@@ -170,6 +173,13 @@ namespace CarGame.Player
 
         private bool TouchesGround()
         {
+            // CharacterController.isGrounded — самый надёжный признак: он
+            // учитывает SkinWidth и шаг по склонам. Raycast ниже ног часто
+            // промахивался (ноги внутри капсулы/сквозь пол), и шаги молчали
+            // «во всех режимах» — именно этот баг и чиним.
+            if (body != null && !body.Equals(null) && body.enabled && body.isGrounded)
+                return true;
+
             Vector3 origin = cachedTransform.position + Vector3.up * 0.15f;
 
             if (!Physics.Raycast(origin, Vector3.down, out RaycastHit hit, groundProbe, groundMask, QueryTriggerInteraction.Ignore))
@@ -193,12 +203,38 @@ namespace CarGame.Player
                 }
             }
 
-            AudioClip clip = defaultStepClips != null && defaultStepClips.Length > 0
-                ? defaultStepClips[Random.Range(0, defaultStepClips.Length)]
-                : ProceduralAudio.Footstep(defaultGrit, defaultTone);
+            AudioClip clip = FirstUsableDefaultClip();
+            if (clip == null)
+            {
+                // В сцене в defaultStepClips мог лежать пустой слот
+                // ({fileID: 0}) — раньше из-за этого шаги молчали вообще.
+                // Генерируем процедурный шаг один раз и играем его.
+                if (generatedDefaultStep == null)
+                    generatedDefaultStep = ProceduralAudio.Footstep(defaultGrit, defaultTone);
+                clip = generatedDefaultStep;
+            }
+
             if (clip == null) return;
 
             source.PlayOneShot(clip, volume * stepVolume);
+        }
+
+        /// <summary>
+        /// Первый реально загруженный клип из дефолтных шагов. Пустые слоты и
+        /// битые ссылки (сброшенные ассеты) пропускаются.
+        /// </summary>
+        private AudioClip FirstUsableDefaultClip()
+        {
+            if (defaultStepClips == null || defaultStepClips.Length == 0) return null;
+
+            int start = Random.Range(0, defaultStepClips.Length);
+            for (int i = 0; i < defaultStepClips.Length; i++)
+            {
+                AudioClip clip = defaultStepClips[(start + i) % defaultStepClips.Length];
+                if (clip != null && !clip.Equals(null)) return clip;
+            }
+
+            return null;
         }
 
         /// <summary>
