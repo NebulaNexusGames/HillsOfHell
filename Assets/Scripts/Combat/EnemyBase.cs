@@ -334,6 +334,17 @@ namespace CarGame.Combat
             return ResolvePatrolDestination();
         }
 
+        /// <summary>
+        /// Разрешено ли роботу сейчас двигаться. Возвращает false в паузе на
+        /// точке патруля — раньше destination в этот момент указывал на текущую
+        /// позицию, но скорость не обнулялась, и робот продолжал «идти» на месте.
+        /// </summary>
+        protected bool PatrolAllowsMove()
+        {
+            if (HasTarget) return true;
+            return Time.time >= pauseUntil;
+        }
+
         private Vector3 ResolvePatrolDestination()
         {
             if (patrolPoints != null && patrolPoints.Length > 0)
@@ -532,16 +543,58 @@ namespace CarGame.Combat
             int sign = reverseFlipped ? -1 : 1;
             reverseFlipped = !reverseFlipped;
 
-            detourDirection = Quaternion.AngleAxis(sign * (90f + Random.Range(0f, 45f)), Vector3.up) * forward;
+            // Боковой объезд допустим только там, где робот физически пролезет:
+            // раньше направление выбиралось вслепую и прижимало робота к стене.
+            for (int attempt = 0; attempt < 8; attempt++)
+            {
+                Vector3 candidate = Quaternion.AngleAxis(sign * (90f + attempt * 15f), Vector3.up) * forward;
+                if (IsPathClear(candidate))
+                {
+                    detourDirection = candidate;
+                    detourTimer = detourDuration;
+                    detourActive = true;
+                    return;
+                }
+            }
+
+            // Все боковые пути заняты — разворот назад единственный выход из угла.
+            detourDirection = -forward;
             detourTimer = detourDuration;
             detourActive = true;
+        }
+
+        /// <summary>
+        /// Признак того, что робот реально упёрся, а не «буксует» на месте по
+        /// собственной воле: стоит в паузе патруля или держит цель на дистанции
+        /// атаки. Настоящее застревание подтверждается контактом с препятствием
+        /// вплотную к корпусу.
+        /// </summary>
+        private bool InPhysicalContact()
+        {
+            Vector3 origin = FrontPosition + Vector3.up * (bodyHalfHeight * 2f * (avoidHeightFactor - 0.5f));
+            Vector3 probe = halfExtents * 0.6f;
+
+            int count = Physics.OverlapBoxNonAlloc(origin, probe, sweepBuffer, Quaternion.identity, obstacleMask, QueryTriggerInteraction.Ignore);
+            for (int i = 0; i < count; i++)
+            {
+                Collider candidate = sweepBuffer[i];
+                if (IsSelf(candidate)) continue;
+                if (IsTargetCollider(candidate)) continue;
+                return true;
+            }
+
+            return false;
         }
 
         protected void UpdateStuckCheck(Vector3 velocity, bool wantsToMove)
         {
             if (climbing) return;
 
-            if (!wantsToMove)
+            // Не хочет идти (пауза патруля, удержание позиции, стойка у цели) —
+            // нулевая скорость не признак застревания. Раньше мечник в такой
+            // момент «зацикливался»: таймер рос, включался объезд, анимация
+            // переходила в бег, а робот продолжал стоять на месте.
+            if (!wantsToMove || !PatrolAllowsMove())
             {
                 stuckTimer = 0f;
                 detourActive = false;
@@ -555,6 +608,11 @@ namespace CarGame.Combat
             if (stuckTimer < stuckDelay) return;
 
             stuckTimer = 0f;
+
+            // Принудительный объезд включаем только при реальном контакте со
+            // стеной — иначе это просто остановка, а не застревание.
+            if (!InPhysicalContact()) return;
+
             if (detourActive) detourTimer = Mathf.Max(detourTimer, detourDuration * 0.6f);
             else StartDetour();
         }
@@ -760,6 +818,120 @@ namespace CarGame.Combat
         {
             PlayerController[] players = FindObjectsByType<PlayerController>(FindObjectsSortMode.None);
             return players.Length > 0 ? players[0] : null;
+        }
+
+        /// <summary>
+        /// Звуки роботов: шаги мечника, прыжки динобота, гул полёта и сигнал
+        /// обнаружения цели. Клипы генерируются процедурно (CarGame.Audio),
+        /// поэтому ассеты не нужны; свои AudioClip можно подкинуть в инспекторе.
+        /// Вешается автоматически на любого EnemyBase при Awake.
+        /// </summary>
+        [DisallowMultipleComponent]
+        public class RobotVoice : MonoBehaviour
+        {
+            [Tooltip("Свой клип шагов (мечник). Пусто — процедурный звук")]
+            [SerializeField] private AudioClip stepClip;
+            [Tooltip("Свой клип прыжка (динобот). Пусто — процедурный звук")]
+            [SerializeField] private AudioClip jumpClip;
+            [Tooltip("Свой клип сигнала обнаружения цели. Пусто — процедурный звук")]
+            [SerializeField] private AudioClip alertClip;
+            [Tooltip("Зацикленный гул винтов для дрона. Пусто — процедурная петля")]
+            [SerializeField] private AudioClip hoverLoopClip;
+            [SerializeField][Range(0f, 2f)] private float stepVolume = 0.35f;
+            [SerializeField][Range(0f, 2f)] private float jumpVolume = 0.6f;
+            [SerializeField][Range(0f, 2f)] private float alertVolume = 0.8f;
+            [SerializeField][Range(0f, 1f)] private float hoverVolume = 0.25f;
+            [Tooltip("Интервал шагов на патруле / беге, с")]
+            [SerializeField] private float patrolStepInterval = 0.55f;
+            [SerializeField] private float runStepInterval = 0.34f;
+
+            private AudioSource voice;
+            private AudioSource hover;
+            private EnemyBase owner;
+            private float stepTimer;
+            private bool wasEngaged;
+
+            private void Awake()
+            {
+                owner = GetComponent<EnemyBase>();
+
+                voice = gameObject.AddComponent<AudioSource>();
+                voice.playOnAwake = false;
+                voice.spatialBlend = 1f;
+                voice.minDistance = 2f;
+                voice.maxDistance = 45f;
+
+                if (GetComponent<RobotDrone>() != null)
+                {
+                    hover = gameObject.AddComponent<AudioSource>();
+                    hover.playOnAwake = false;
+                    hover.loop = true;
+                    hover.spatialBlend = 1f;
+                    hover.minDistance = 3f;
+                    hover.maxDistance = 70f;
+                    hover.clip = hoverLoopClip != null ? hoverLoopClip : CarGame.Audio.ProceduralAudio.HoverLoop();
+                    hover.volume = hoverVolume;
+                    hover.Play();
+                }
+            }
+
+            private void Update()
+            {
+                if (owner == null) return;
+
+                // Сигнал обнаружения — ровно в момент захвата цели.
+                bool engaged = owner.HasTarget;
+                if (engaged && !wasEngaged) Play(alertClip, CarGame.Audio.ProceduralAudio.Alert(), alertVolume, pitchJitter: 0.08f);
+                wasEngaged = engaged;
+
+                if (hover != null)
+                {
+                    // Чем быстрее летит дрон — тем выше тон винтов.
+                    Rigidbody body = owner.GetComponent<Rigidbody>();
+                    float speed = body != null ? body.linearVelocity.magnitude : 0f;
+                    hover.pitch = Mathf.Clamp(0.85f + speed * 0.03f, 0.8f, 1.5f);
+                    hover.volume = hoverVolume * Mathf.Clamp01(0.4f + speed * 0.12f);
+                }
+            }
+
+            /// <summary>Шаги мечника: вызывать каждый кадр, интервал держит сам.</summary>
+            public void Step(Vector3 horizontalVelocity, bool engaged)
+            {
+                float speed = horizontalVelocity.magnitude;
+                if (speed < 0.5f)
+                {
+                    stepTimer = 0f;
+                    return;
+                }
+
+                stepTimer -= Time.deltaTime;
+                if (stepTimer > 0f) return;
+
+                stepTimer = engaged ? runStepInterval : patrolStepInterval;
+                float tone = engaged ? 150f : 118f;
+                Play(stepClip, CarGame.Audio.ProceduralAudio.Footstep(0.5f, tone), stepVolume, pitchJitter: 0.12f);
+            }
+
+            /// <summary>Прыжок динобота: толчок вверх.</summary>
+            public void Jump()
+            {
+                Play(jumpClip, CarGame.Audio.ProceduralAudio.Jump(), jumpVolume, pitchJitter: 0.1f);
+            }
+
+            /// <summary>Приземление динобота: глухой тяжёлый удар.</summary>
+            public void Land()
+            {
+                Play(null, CarGame.Audio.ProceduralAudio.Impact(true), jumpVolume * 0.8f, pitchJitter: -0.15f);
+            }
+
+            private void Play(AudioClip custom, AudioClip procedural, float volume, float pitchJitter)
+            {
+                AudioClip clip = custom != null ? custom : procedural;
+                if (clip == null || voice == null) return;
+
+                voice.pitch = Mathf.Clamp(1f + Random.Range(-pitchJitter, pitchJitter), 0.6f, 1.6f);
+                voice.PlayOneShot(clip, volume);
+            }
         }
     }
 }
