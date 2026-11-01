@@ -96,6 +96,20 @@ namespace CarGame.Combat
         [SerializeField] private float groundProbeSlack = 0.15f;
 
 
+        [Header("Звуки")]
+        [Tooltip("Свой клип прыжка-отталкивания. Пусто — процедурный звук")]
+        [SerializeField] private AudioClip jumpSound;
+        [Tooltip("Зацикленный клип полёта (жужжание, пока робот в воздухе). Пусто — процедурная петля")]
+        [SerializeField] private AudioClip flightSound;
+        [Tooltip("Свой клип приземления. Пусто — процедурный глухой удар")]
+        [SerializeField] private AudioClip landingSound;
+        [Tooltip("Свой клип сигнала обнаружения цели (звучит в момент захвата). Пусто — процедурный звук")]
+        [SerializeField] private AudioClip alertSound;
+        [SerializeField][Range(0f, 2f)] private float jumpVolume = 0.6f;
+        [SerializeField][Range(0f, 1f)] private float flightVolume = 0.25f;
+        [SerializeField][Range(0f, 2f)] private float landingVolume = 0.5f;
+        [SerializeField][Range(0f, 2f)] private float alertVolume = 0.8f;
+
         [Header("Эффект взрыва")]
         [Tooltip("Готовый объект взрыва со своими триггерами. Ставится в точке, где робот взорвался")]
         [SerializeField] private GameObject explosionEffectPrefab;
@@ -189,10 +203,17 @@ namespace CarGame.Combat
 
             BaseAwake();
 
+            // Звуковые поля этого скрипта настраивают общий звуковой движок.
+            ApplySoundClips(null, jumpSound, flightSound, landingSound, alertSound, null,
+                -1f, jumpVolume, landingVolume, alertVolume, flightVolume, -1f);
+
             phase = JumpPhase.Idle;
             cooldownTimer = jumpCooldown;
             attackChain = false;
         }
+
+        /// <summary>Робот сейчас в воздухе (для звука полёта в RobotVoice).</summary>
+        public bool IsAirborneForSound => hasLeftGround && !IsGrounded();
 
         /// <summary>
         /// Канонические имена состояний контроллера DinamiteBot. Нужны как запасной
@@ -461,6 +482,8 @@ namespace CarGame.Combat
 
         private void EnterLanding()
         {
+            // Звук приземления — ровно один раз при входе в фазу Landing.
+            if (phase != JumpPhase.Landing && Voice != null) Voice.Land();
             EnterPhase(JumpPhase.Landing, landingDuration);
         }
 
@@ -627,6 +650,8 @@ namespace CarGame.Combat
             wasAirborne = false;
             launchTime = Time.time;
             cooldownTimer = jumpCooldown;
+
+            if (Voice != null) Voice.Jump();
 
             EnterPhase(attack ? JumpPhase.AttackFlying : JumpPhase.Jump, 0f);
         }
