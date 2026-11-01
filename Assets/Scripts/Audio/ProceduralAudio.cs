@@ -610,6 +610,68 @@ namespace CarGame.Audio
             return clip;
         }
 
+        /// <summary>
+        /// Зацикленный гул винтов дрона. Петля строится периодическими синусами
+        /// (частоты кратны длине цикла), поэтому стык бесшовный без спец-фильтров.
+        /// </summary>
+        public static AudioClip HoverLoop()
+        {
+            float duration = 0.5f;
+            int count = Mathf.CeilToInt(duration * SampleRate);
+            float[] data = new float[count];
+
+            // 4 «винта» с немного разными частотами + низкий гул корпуса.
+            float[] rotors = { 92f, 97.5f, 105f, 111f };
+
+            for (int i = 0; i < count; i++)
+            {
+                float t = i / (float)SampleRate;
+                float value = 0f;
+
+                for (int r = 0; r < rotors.Length; r++)
+                {
+                    float f = rotors[r];
+                    // Кратность частоты 1/duration гарантирует бесшовность петли.
+                    float snapped = Mathf.Round(f * duration) / duration;
+                    float wobble = 1f + 0.04f * Mathf.Sin(2f * Mathf.PI * (Mathf.Round(3f * duration) / duration) * t + r);
+                    value += Mathf.Sin(2f * Mathf.PI * snapped * wobble * t) * 0.22f;
+                    value += Mathf.Sin(2f * Mathf.PI * snapped * 2f * t) * 0.07f;
+                }
+
+                float hum = Mathf.Sin(2f * Mathf.PI * (Mathf.Round(46f * duration) / duration) * t) * 0.18f;
+                data[i] = value + hum;
+            }
+
+            Normalize(data, 0.5f);
+            return Build("HoverLoopGenerated", data);
+        }
+
+        /// <summary>
+        /// Сигнал обнаружения цели: короткий двухтонный «пик-пок» робота.
+        /// </summary>
+        public static AudioClip Alert()
+        {
+            float duration = 0.34f;
+            int count = Mathf.CeilToInt(duration * SampleRate);
+            float[] data = new float[count];
+
+            for (int i = 0; i < count; i++)
+            {
+                float t = i / (float)SampleRate;
+                float progress = t / duration;
+                float frequency = progress < 0.5f ? 720f : 980f;
+                float segment = progress < 0.5f ? progress / 0.5f : (progress - 0.5f) / 0.5f;
+                float envelope = Mathf.Clamp01(segment * 8f) * Mathf.Exp(-5f * segment);
+
+                data[i] = Mathf.Sin(2f * Mathf.PI * frequency * t) * envelope * 0.8f
+                        + Mathf.Sin(2f * Mathf.PI * frequency * 1.5f * t) * envelope * 0.25f;
+            }
+
+            FadeEdges(data, 0.002f);
+            Normalize(data, 0.6f);
+            return Build("AlertGenerated", data);
+        }
+
         private static float Saw(float phase)
         {
             float wrapped = Mathf.Repeat(phase, 2f * Mathf.PI) / (2f * Mathf.PI);

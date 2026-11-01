@@ -33,6 +33,22 @@ namespace CarGame.Combat
         [Tooltip("С какой стороны дрон держится относительно цели, градусы")]
         [SerializeField] private float orbitPhase;
 
+        [Header("Физика полёта")]
+        [Tooltip("Насколько быстро дрон догоняет желаемую скорость (инерция). Меньше — «тяжелее» и плавнее")]
+        [SerializeField] private float velocityResponse = 6f;
+        [Tooltip("Максимальный крен корпуса при разгоне, градусы. Корпус наклоняется в сторону поворота, как настоящий мультикоптер")]
+        [SerializeField] private float maxTiltAngle = 28f;
+        [Tooltip("Насколько быстро корпус возвращается в горизонт")]
+        [SerializeField] private float tiltResponse = 5f;
+        [Tooltip("Вертикальные колебания зависания (дрожание высоты), м")]
+        [SerializeField] private float bobAmplitude = 0.14f;
+        [Tooltip("Частота колебаний зависания, Гц")]
+        [SerializeField] private float bobFrequency = 0.9f;
+        [Tooltip("Проверять потолок над дроном и снижаться, чтобы протиснуться в низкий проход, м")]
+        [SerializeField] private float ceilingProbe = 3.5f;
+        [Tooltip("Запас от потолка, м")]
+        [SerializeField] private float ceilingClearance = 0.45f;
+
         [Header("Стрельба")]
         [Tooltip("Дальность стрельбы, м")]
         [SerializeField] private float shootRange = 55f;
@@ -80,6 +96,9 @@ namespace CarGame.Combat
         [SerializeField] private float shotVolume = 0.5f;
 
         private Rigidbody body;
+        private Transform tiltRig;
+        private float bobPhase;
+        private RobotVoice voice;
         private float nextFireTime;
         private int nextFirePoint = -1;
         private float orbitAngle;
@@ -154,6 +173,15 @@ namespace CarGame.Combat
 
             SphereCollider sphere = GetComponent<SphereCollider>();
             if (sphere != null) sphere.isTrigger = true;
+
+            // Дрон — мультикоптер: корпус должен наклоняться в сторону движения,
+            // но физический Rigidbody остаёт с заморозкой вращения. Крен крутится
+            // на отдельном «риге»: если модель уже лежит дочерним объектом под
+            // этим геймом, кренуем её, иначе создаём пустой rig и пересобираем
+            // визуал под него. Коллайдеры остаются на корне — физика не плывёт.
+            BuildTiltRig();
+
+            voice = gameObject.AddComponent<RobotVoice>();
 
             audioSource = gameObject.AddComponent<AudioSource>();
             audioSource.playOnAwake = false;

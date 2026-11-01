@@ -64,8 +64,20 @@ namespace CarGame.Combat
         private string currentState;
         private float attackLockTime;
         private float attackStopTimer;
+        private RobotVoice voice;
 
         public Animator Animator => animator;
+
+        /// <summary>Голос робота (шаги/сигнал цели). Создаётся автоматически.</summary>
+        protected RobotVoice Voice
+        {
+            get
+            {
+                if (voice == null) voice = GetComponent<RobotVoice>();
+                if (voice == null) voice = gameObject.AddComponent<RobotVoice>();
+                return voice;
+            }
+        }
 
         private void ApplyBloodMoonBuffs()
         {
@@ -118,9 +130,16 @@ namespace CarGame.Combat
 
             if (direction.sqrMagnitude > 0.0001f) FaceDirection(direction, turnSpeed, Time.deltaTime);
 
-            Move(direction, striking ? 0f : engaged ? moveSpeed : PatrolSpeed);
+            // Пауза на точке патруля: робот обязан встать, а не «идти» на месте.
+            bool mayMove = PatrolAllowsMove();
+            float speed = !mayMove || striking ? 0f : engaged ? moveSpeed : PatrolSpeed;
+            Move(mayMove ? direction : Vector3.zero, speed);
 
             UpdateAnimation(engaged);
+
+            RobotVoice voice = Voice;
+            if (voice != null && body != null)
+                voice.Step(new Vector3(body.linearVelocity.x, 0f, body.linearVelocity.z), engaged);
 
             if (!engaged || Target == null) return;
             if (distance > attackRange) return;
