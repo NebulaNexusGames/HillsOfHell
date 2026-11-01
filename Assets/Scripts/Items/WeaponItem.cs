@@ -336,14 +336,46 @@ namespace CarGame.Items
 
             if (muzzleFlash) SpawnEffect(shotEffectPrefab, origin, aimDirection, true);
 
+            // Дробь: ствол целиится строго в центр экрана. Первый луч — точно
+            // по прицельной линии, остальные разлетаются симметричным конусом
+            // вокруг него (золотой угол), а не случайным роем. Все лучи идут
+            // из FirePoint. Суммарный урон залпа равен DamagePerShot независимо
+            // от числа дробин: DamagePerPellet делится на количество пуль.
+            float pelletDamage = pellets > 1 && spec.DamagePerPellet > 0f
+                ? spec.DamagePerPellet / pellets
+                : spec.DamagePerPellet;
+            float spreadRad = spec.SpreadDegrees * Mathf.Deg2Rad;
+            const float goldenAngle = 2.39996323f;
+
+            // Ортонормированный базис вокруг прицельной линии: конус разброса
+            // строится относительно неё, а не осей модели оружия.
+            Vector3 aimUp = Vector3.Cross(Vector3.up, aimDirection).sqrMagnitude > 0.001f
+                ? Vector3.Cross(Vector3.Cross(aimDirection, Vector3.up), aimDirection).normalized
+                : Vector3.Cross(aimDirection, Vector3.right).normalized;
+            Vector3 aimRight = Vector3.Cross(aimUp, aimDirection).normalized;
+
             for (int i = 0; i < pellets; i++)
             {
-                Vector3 direction = Hitscan.ApplySpread(aimDirection, spec.SpreadDegrees);
+                Vector3 direction = aimDirection;
+                if (i > 0 && spreadRad > 0.0001f)
+                {
+                    float radius = spreadRad * Mathf.Sqrt(i / (float)pellets);
+                    float angle = i * goldenAngle;
+                    direction = Quaternion.AngleAxis(radius * Mathf.Rad2Deg * Mathf.Sin(angle), aimUp)
+                              * Quaternion.AngleAxis(radius * Mathf.Rad2Deg * Mathf.Cos(angle), aimRight)
+                              * aimDirection;
+                }
+
                 HitscanResult shot = Hitscan.Cast(origin, direction, spec.Range, spec.AssistRadius, shotMask, IgnoreTransform);
 
-                Hitscan.ApplyDamage(shot, IgnoreTransform, spec.DamagePerPellet, false, spec.CarDamageMultiplier);
+                Hitscan.ApplyDamage(shot, IgnoreTransform, pelletDamage, false, spec.CarDamageMultiplier);
 
                 if (showTracer) SpawnTracer(origin, shot.Point, tracerWidth, tracerColor, tracerSpeed);
+
+                // Декалина стене: если луч упёрся в поверхность (не в цель или
+                // промахнулся за дистанцию), ставим пулевое пятно.
+                if (shot.HasSurface && (shot.Target == null || shot.Distance < spec.Range))
+                    BulletDecal.Spawn(shot.Point, shot.Normal);
 
                 if (effects >= maxHitEffects) continue;
                 if (shot.Distance >= spec.Range) continue;
