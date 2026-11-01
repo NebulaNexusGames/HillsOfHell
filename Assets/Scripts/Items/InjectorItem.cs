@@ -22,7 +22,7 @@ namespace CarGame.Items
         [SerializeField] private bool requireAlive = true;
 
         [Header("Оверхил")]
-        [Tooltip("Включать ли оверхил: при 100 хп инджектор даёт запас сверх базы. Значение по умолчанию — если игрок ещё не менял настройку")]
+        [Tooltip("Включать ли оверхил: при 100 хп инджектор даёт запас сверх базы. Работает только пока настройка не переопределена через InjectorItem.SetOverhealEnabled (PlayerPrefs): до этого значение из инспектора и есть текущее")]
         [SerializeField] private bool enableOverheal = true;
 
         [Header("Таймеры применения")]
@@ -51,35 +51,70 @@ namespace CarGame.Items
         private float useLockout = 0.35f;
 
         private const string OverhealPrefKey = "cargame.injector.overheal";
-        private static int overhealPrefCache = -1;
+        // -1: настройку ещё никто не менял, действует enableOverheal из инспектора.
+        // 0 или 1: явный выбор игрока, он переживает перезапуск (PlayerPrefs).
+        private static int overhealOverride = -1;
+        private static bool overhealOverrideLoaded;
 
         /// <summary>
-        /// Включён ли оверхил. Настройка общая для всех инжекторов и переживает
-        /// перезапуск (PlayerPrefs).
+        /// Включён ли оверхил. Настройка общая для всех инжекторов и лечилок на
+        /// базе <c>InjectorItem</c> и переживает перезапуск (PlayerPrefs).
+        /// Пока настройку не меняли, значение берётся из инспектора предмета.
         /// </summary>
         public static bool OverhealEnabled
         {
             get
             {
-                if (overhealPrefCache < 0)
-                    overhealPrefCache = PlayerPrefs.GetInt(OverhealPrefKey, 1);
-                return overhealPrefCache != 0;
+                LoadOverhealOverride();
+                return overhealOverride != 0;
             }
-            set
-            {
-                overhealPrefCache = value ? 1 : 0;
-                PlayerPrefs.SetInt(OverhealPrefKey, overhealPrefCache);
-                PlayerPrefs.Save();
-            }
+            set => SetOverhealEnabled(value);
         }
 
-        /// <summary>Учитывает значение по умолчанию из инспектора при первом чтении.</summary>
+        /// <summary>Явно включает или выключает оверхил для всех лечилок.</summary>
+        public static void SetOverhealEnabled(bool value)
+        {
+            overhealOverride = value ? 1 : 0;
+            PlayerPrefs.SetInt(OverhealPrefKey, overhealOverride);
+            PlayerPrefs.Save();
+        }
+
+        /// <summary>Сбрасывает выбор игрока: дальше действует enableOverheal из инспектора.</summary>
+        public static void ResetOverhealToDefault()
+        {
+            overhealOverride = -1;
+            overhealOverrideLoaded = true;
+            PlayerPrefs.DeleteKey(OverhealPrefKey);
+            PlayerPrefs.Save();
+        }
+
+        private static void LoadOverhealOverride()
+        {
+            if (overhealOverrideLoaded) return;
+
+            overhealOverrideLoaded = true;
+            overhealOverride = PlayerPrefs.GetInt(OverhealPrefKey, -1);
+        }
+
+        /// <summary>
+        /// Актуальный оверхил для этого предмета: если игрок менял настройку —
+        /// её значение, иначе значение поля из инспектора.
+        /// </summary>
         private bool ResolveOverhealEnabled()
         {
-            if (overhealPrefCache < 0)
-                overhealPrefCache = PlayerPrefs.GetInt(OverhealPrefKey, enableOverheal ? 1 : 0);
+            LoadOverhealOverride();
+            if (overhealOverride >= 0) return overhealOverride != 0;
+            return enableOverheal;
+        }
 
-            return overhealPrefCache != 0;
+        /// <summary>
+        /// Можно ли применить лечилку к этому здоровью. Без оверхила на полных
+        /// 100 хп применение запрещено: предмет не должен тратиться впустую.
+        /// </summary>
+        private bool CanApplyHeal(Health target)
+        {
+            if (!ResolveOverhealEnabled() && target != null && target.IsFull) return false;
+            return true;
         }
 
         /// <summary>Идёт применение: бросок заблокирован, повторное нажатие игнорируется.</summary>
@@ -90,6 +125,15 @@ namespace CarGame.Items
             if (inUse) return;
             if (Time.time < nextUseTime) return;
             if (!CanUse(hand)) return;
+
+            // Лечилка без оверхила на полных 100 хп бессмысленна: не тратим
+            // предмет, не проигрываем анимацию и не блокируем руку.
+            // С оверхилом применение разрешено — оно даёт запас сверх базы.
+            if (!CanApplyHeal(ResolveTargetHealth(hand)))
+            {
+                Debug.Log("[Injector] Хп уже полные, а оверхил выключен — инжектор не применён.", this);
+                return;
+            }
 
             ResolveAnimator(hand);
             BeginUse(hand);
@@ -140,6 +184,18 @@ namespace CarGame.Items
             PlayUseAnimation();
 
             Health target = ResolveTargetHealth(hand);
+
+            // Проверку дублируем здесь: если вызов придёт не через
+            // OnUsePressed, лечилка без оверхила всё равно не должна тратиться
+            // на полных 100 хп. Откат делаем до блокировки броска — тогда
+            // достаточно вернуть анимацию в Idle и снять флаг применения.
+            if (!CanApplyHeal(target))
+            {
+                inUse = false;
+                RequestIdleState();
+                return;
+            }
+
             Vector3 position = hand.HoldSocket != null ? hand.HoldSocket.position : transform.position;
 
             hand.SetDropBlocked(true);
