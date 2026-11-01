@@ -1,3 +1,4 @@
+using CarGame.Player;
 using CarGame.Vehicle;
 using UnityEngine;
 
@@ -223,7 +224,14 @@ namespace CarGame.Combat
                 // идём к последней видимой точке, чтобы не стоять на месте.
                 desiredDirection = LastKnownTargetPosition - transform.position;
             }
-            Vector3 direction = ComputeAvoidance(desiredDirection);
+
+            // Машина с игроком внутри — цель, а не препятствие: идём прямо на неё,
+            // иначе ComputeAvoidance начинает её обходить вместо атаки. Пустая
+            // машина остаётся препятствием и обходится штатно (по требованию).
+            bool chargeOccupiedCar = engaged && IsOccupiedVehicleTarget();
+            Vector3 direction = chargeOccupiedCar
+                ? (desiredDirection.sqrMagnitude > 0.0001f ? desiredDirection.normalized : Vector3.zero)
+                : ComputeAvoidance(desiredDirection);
 
             UpdateStuckCheck(
                 body != null ? body.linearVelocity : Vector3.zero,
@@ -541,6 +549,24 @@ namespace CarGame.Combat
         }
 
         /// <summary>
+        /// Сидит ли игрок внутри текущей цели-машины. Машина с водителем — это
+        /// тоже цель: её нельзя считать препятствием, иначе мечник начинает её
+        /// обходить вместо атаки. Пустая машина (игрок снаружи/рядом) остаётся
+        /// препятствием и обходится штатной логикой — так требует геймплей.
+        /// </summary>
+        private bool IsOccupiedVehicleTarget()
+        {
+            if (Target == null || !Target.IsCar) return false;
+
+            CarController car = Target.GetComponent<CarController>();
+            if (car == null) car = Target.GetComponentInParent<CarController>();
+            if (car == null) return false;
+
+            PlayerController driver = car.Driver;
+            return driver != null && !driver.Equals(null);
+        }
+
+        /// <summary>
         /// Принудительный объезд препятствия во время преследования: включается,
         /// когда робот пытается бежать к цели, но стоит на месте (упёрся).
         /// Обходит мягкие условия UpdateStuckCheck (там нужен физический контакт
@@ -652,10 +678,16 @@ namespace CarGame.Combat
             Vector3 origin = FrontPosition + Vector3.up;
             Vector3 point = target.transform.position + Vector3.up;
 
-            if (Physics.Linecast(origin, point, out RaycastHit hit, ~0, QueryTriggerInteraction.Ignore)
-                && !hit.collider.transform.IsChildOf(target.transform)
-                && !hit.collider.transform.IsChildOf(transform))
-                return;
+            // Машина с игроком внутри — цель: бьём по ней при любом касании,
+            // Linecast-проверку «не сквозь стену» для неё пропускаем (корпус
+            // машины всегда перекрывает луч). Пустая машина/препятства — как раньше.
+            if (!IsOccupiedVehicleTarget())
+            {
+                if (Physics.Linecast(origin, point, out RaycastHit hit, ~0, QueryTriggerInteraction.Ignore)
+                    && !hit.collider.transform.IsChildOf(target.transform)
+                    && !hit.collider.transform.IsChildOf(transform))
+                    return;
+            }
 
             float damage = attackDamage;
             CarController car = target.GetComponentInParent<CarController>();

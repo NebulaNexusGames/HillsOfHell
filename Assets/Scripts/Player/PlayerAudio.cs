@@ -50,6 +50,9 @@ namespace CarGame.Player
         [SerializeField] private AudioClip damageClip;
 
         [Header("Шаги")]
+        [Tooltip("Вкл — шаги различаются по поверхности под ногами (Surface Steps). " +
+                "Выкл — всегда играется дефолтный звук ходьбы независимо от поверхности")]
+        [SerializeField] private bool dynamicStepSound = false;
         [Tooltip("Шаги по умолчанию, если для поверхности не задано своих")]
         [SerializeField] private AudioClip[] defaultStepClips = new AudioClip[0];
         [SerializeField] private SurfaceSteps[] surfaces = new SurfaceSteps[0];
@@ -113,9 +116,33 @@ namespace CarGame.Player
             if (health != null) health.Damaged -= OnDamaged;
         }
 
+        /// <summary>
+        /// Источник обязан быть живым и не заглушённым: после рестартов сцены
+        /// AudioSource мог остаться выключенным или «выключенным» по объёму —
+        /// шаги при этом молчали, хотя код их проигрывал.
+        /// </summary>
+        private void EnsureSource()
+        {
+            if (source == null || source.Equals(null))
+                source = GetComponent<AudioSource>();
+            if (source == null)
+                source = gameObject.AddComponent<AudioSource>();
+
+            if (!source.playOnAwake) source.playOnAwake = false;
+            source.spatialBlend = 0f;
+
+            if (!source.enabled) source.enabled = true;
+            if (source.mute) source.mute = false;
+            if (source.volume <= 0.001f) source.volume = 1f;
+        }
+
         private void Update()
         {
             if (controller != null && controller.IsInCar) return;
+
+            // Источник мог быть пересобран/перехвачен после рестарта забега —
+            // иначе PlayOneShot молчит и шаги «не работают».
+            EnsureSource();
 
             Vector3 position = cachedTransform.position;
             float speed = HorizontalSpeed();
@@ -153,7 +180,19 @@ namespace CarGame.Player
 
         private void PlayStep()
         {
-            // Ходьба больше не зависит от поверхности - всегда общий звук
+            // Динамичные шаги по поверхностям — только если DynamicStepSound включён.
+            // Выключен — всегда слышен дефолтный звук ходьбы независимо от поверхности.
+            if (dynamicStepSound)
+            {
+                string surface = ResolveSurfaceName();
+                AudioClip dynamic = PickStepClip(surface);
+                if (dynamic != null)
+                {
+                    source.PlayOneShot(dynamic, volume * stepVolume * ResolveSurfaceVolume(surface));
+                    return;
+                }
+            }
+
             AudioClip clip = defaultStepClips != null && defaultStepClips.Length > 0
                 ? defaultStepClips[Random.Range(0, defaultStepClips.Length)]
                 : ProceduralAudio.Footstep(defaultGrit, defaultTone);
