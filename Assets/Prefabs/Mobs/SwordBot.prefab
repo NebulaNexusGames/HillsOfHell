@@ -1065,6 +1065,10 @@ MonoBehaviour:
   maxHealth: 100
   owner: 2
   safeWhenDead: 1
+  fixOne: 0
+  fixOneMetal: 0
+  maxOverheal: 0
+  overhealDecayPerSecond: 1
 --- !u!136 &2444545356843522034
 CapsuleCollider:
   m_ObjectHideFlags: 0
@@ -1134,6 +1138,9 @@ MonoBehaviour:
     serializedVersion: 2
     m_Bits: 4294967295
   loseTargetMemory: 4
+  rememberTargetWhenLost: 1
+  sightAngleDegrees: 120
+  nearDetectionRadius: 8
   requireReachableTarget: 1
   targetHeightOffset: 1
   maxTargetHeight: 6
@@ -1146,7 +1153,10 @@ MonoBehaviour:
   patrolSpeed: 1.9
   patrolWaitTime: 1.5
   restDuration: 5
-  restChance: 0.75
+  patrolStepsBeforeStop: 8
+  patrolStepLength: 0.7
+  patrolDistanceBeforeStop: 6
+  patrolStopDuration: 1
   obstacleProbe: 3
   obstacleMask:
     serializedVersion: 2
@@ -1193,6 +1203,12 @@ MonoBehaviour:
     countMin: 1
     countMax: 3
   scatterRadius: 0.5
+  chaseGiveUpTime: 3
+  stepSound: {fileID: 8300000, guid: f16105201404fd942b37c0670ea71f09, type: 3}
+  alertSound: {fileID: 8300000, guid: a643cd8d6f0423b43bf5c160f262abf0, type: 3}
+  stepVolume: 0.35
+  alertVolume: 0.8
+  targetMemoryDuration: 10
 --- !u!1 &4405899903749958003
 GameObject:
   m_ObjectHideFlags: 0

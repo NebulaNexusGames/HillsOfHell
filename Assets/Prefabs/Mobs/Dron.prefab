@@ -773,6 +773,10 @@ MonoBehaviour:
   maxHealth: 250
   owner: 2
   safeWhenDead: 1
+  fixOne: 0
+  fixOneMetal: 0
+  maxOverheal: 0
+  overhealDecayPerSecond: 1
 --- !u!135 &209782364609146261
 SphereCollider:
   m_ObjectHideFlags: 0
@@ -813,6 +817,9 @@ MonoBehaviour:
     serializedVersion: 2
     m_Bits: 4294967295
   loseTargetMemory: 4
+  rememberTargetWhenLost: 1
+  sightAngleDegrees: 120
+  nearDetectionRadius: 8
   requireReachableTarget: 1
   targetHeightOffset: 1
   maxTargetHeight: 14
@@ -825,7 +832,10 @@ MonoBehaviour:
   patrolSpeed: 1.9
   patrolWaitTime: 1.5
   restDuration: 5
-  restChance: 0.75
+  patrolStepsBeforeStop: 8
+  patrolStepLength: 0.7
+  patrolDistanceBeforeStop: 6
+  patrolStopDuration: 1
   obstacleProbe: 2.4
   obstacleMask:
     serializedVersion: 2
@@ -853,6 +863,15 @@ MonoBehaviour:
   orbitRadius: 9
   orbitSpeed: 0.75
   orbitPhase: 0
+  velocityResponse: 6
+  maxTiltAngle: 28
+  tiltResponse: 5
+  bobAmplitude: 0.14
+  bobFrequency: 0.9
+  ceilingProbe: 3.5
+  ceilingClearance: 0.45
+  minGroundHeight: 1.2
+  patrolAltitude: 6
   shootRange: 55
   fireInterval: 0.5
   firePoints:
@@ -866,17 +885,22 @@ MonoBehaviour:
     m_Bits: 4294967295
   carDamageMultiplier: 1.4
   shotEffectPrefab: {fileID: 1916530845266981763, guid: 16da14cdeb7ca6945ae3e507cfdd21ad, type: 3}
+  showTracer: 1
+  tracerWidth: 0.04
+  tracerSpeed: 180
+  tracerColor: {r: 1, g: 0.35, b: 0.25, a: 1}
   explosionEffectPrefab: {fileID: 5316626115453355477, guid: 77450e5255e83d549b294f418ebf06f6, type: 3}
-  explosionRadius: 3.5
-  explosionDamage: 30
-  explosionKnockback: 9
   crashSpeed: 7
   crashSpinSpeed: 540
-  crashSpinTime: 2.5
   crashMask:
     serializedVersion: 2
     m_Bits: 4294967295
   shotVolume: 0.5
+  flightSound: {fileID: 0}
+  shotSound: {fileID: 0}
+  alertSound: {fileID: 8300000, guid: a643cd8d6f0423b43bf5c160f262abf0, type: 3}
+  flightVolume: 0.25
+  alertVolume: 0.8
 --- !u!1 &2781116819904205861
 GameObject:
   m_ObjectHideFlags: 0
