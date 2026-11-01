@@ -96,9 +96,23 @@ namespace CarGame.Combat
         protected Health health;
         protected PlayerController player;
 
-        /// <summary>Звуки робота (шаги/прыжки/сигнал обнаружения). Создаётся
-        /// автоматически на Awake, доступен наследникам для вызовов Jump/Land/Step.</summary>
+        /// <summary>Звуковой движок робота: создаётся автоматически на Awake.
+        /// Клипы и громкости лежат НЕ здесь, а в полях каждого конкретного
+        /// бота (RobotKamikaze / RobotDrone / RobotSwordsman) — они передаются
+        /// в Voice через ApplySoundClips().</summary>
         protected RobotVoice Voice { get; private set; }
+
+        /// <summary>Наследники вызывают это из своего Awake: их инспекторные
+        /// поля со звуками настраивают общий звуковой компонент.</summary>
+        protected void ApplySoundClips(AudioClip stepClip, AudioClip jumpClip,
+            AudioClip flightLoopClip, AudioClip landClip, AudioClip alertClip, AudioClip shotClip,
+            float stepVolume = -1f, float jumpVolume = -1f, float landVolume = -1f,
+            float alertVolume = -1f, float flightLoopVolume = -1f, float shotVolume = -1f)
+        {
+            if (Voice == null) return;
+            Voice.AssignClips(stepClip, jumpClip, flightLoopClip, landClip, alertClip, shotClip);
+            Voice.AssignVolumes(stepVolume, jumpVolume, landVolume, alertVolume, flightLoopVolume, shotVolume);
+        }
 
         private Transform currentPatrolPoint;
         private float pauseUntil;
@@ -1118,27 +1132,54 @@ namespace CarGame.Combat
         [DisallowMultipleComponent]
         public class RobotVoice : MonoBehaviour
         {
-            [Header("Клипы")]
-            [Tooltip("Свой клип шагов (мечник). Пусто — процедурный звук")]
-            [SerializeField] private AudioClip stepClip;
-            [Tooltip("Свой клип прыжка-отталкивания (динобот). Пусто — процедурный звук")]
-            [SerializeField] private AudioClip jumpClip;
-            [Tooltip("Зацикленный клип полёта: жужжание в воздухе (динобот) или гул винтов (дрон). Пусто — процедурная петля")]
-            [SerializeField] private AudioClip flightLoopClip;
-            [Tooltip("Свой клип приземления (динобот). Пусто — процедурный глухой удар")]
-            [SerializeField] private AudioClip landClip;
-            [Tooltip("Свой клип сигнала обнаружения цели (звучит у всех роботов в момент захвата). Пусто — процедурный звук")]
-            [SerializeField] private AudioClip alertClip;
-            [Tooltip("Свой клип выстрела дрона. Пусто — процедурный звук")]
-            [SerializeField] private AudioClip shotClip;
+            // Клипы и громкости НЕ настраиваются здесь: их передаёт конкретный
+            // бот через AssignClips/AssignVolumes (поля инспектора живут в
+            // RobotKamikaze / RobotDrone / RobotSwordsman). Пустой клип —
+            // процедурный звук по умолчанию.
+            private AudioClip stepClip;
+            private AudioClip jumpClip;
+            private AudioClip flightLoopClip;
+            private AudioClip landClip;
+            private AudioClip alertClip;
+            private AudioClip shotClip;
 
-            [Header("Громкости")]
-            [SerializeField][Range(0f, 2f)] private float stepVolume = 0.35f;
-            [SerializeField][Range(0f, 2f)] private float jumpVolume = 0.6f;
-            [SerializeField][Range(0f, 2f)] private float landVolume = 0.5f;
-            [SerializeField][Range(0f, 2f)] private float alertVolume = 0.8f;
-            [SerializeField][Range(0f, 1f)] private float flightLoopVolume = 0.25f;
-            [SerializeField][Range(0f, 2f)] private float shotVolume = 0.5f;
+            private float stepVolume = 0.35f;
+            private float jumpVolume = 0.6f;
+            private float landVolume = 0.5f;
+            private float alertVolume = 0.8f;
+            private float flightLoopVolume = 0.25f;
+            private float shotVolume = 0.5f;
+
+            /// <summary>Настройка клиентских клипов из скрипта конкретного бота.</summary>
+            public void AssignClips(AudioClip steps, AudioClip jump, AudioClip flightLoop,
+                AudioClip land, AudioClip alert, AudioClip shot)
+            {
+                stepClip = steps;
+                jumpClip = jump;
+                landClip = land;
+                alertClip = alert;
+                shotClip = shot;
+
+                bool loopChanged = flightLoopClip != flightLoop;
+                flightLoopClip = flightLoop;
+                if (loopChanged && hover != null)
+                {
+                    hover.clip = flightLoopClip != null ? flightLoopClip : CarGame.Audio.ProceduralAudio.HoverLoop();
+                }
+            }
+
+            /// <summary>Настройка громкостей; значение меньше нуля — оставить дефолт.</summary>
+            public void AssignVolumes(float steps, float jump, float land,
+                float alert, float flightLoop, float shot)
+            {
+                if (steps >= 0f) stepVolume = steps;
+                if (jump >= 0f) jumpVolume = jump;
+                if (land >= 0f) landVolume = land;
+                if (alert >= 0f) alertVolume = alert;
+                if (flightLoop >= 0f) flightLoopVolume = flightLoop;
+                if (shot >= 0f) shotVolume = shot;
+                if (hover != null) hover.volume = flightLoopVolume;
+            }
 
             [Header("Интервалы")]
             [Tooltip("Интервал шагов на патруле / беге, с")]

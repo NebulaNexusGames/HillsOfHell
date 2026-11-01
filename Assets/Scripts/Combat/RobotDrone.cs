@@ -98,12 +98,21 @@ namespace CarGame.Combat
         [Header("Звук")]
         [Tooltip("Громкость выстрела")]
         [SerializeField] private float shotVolume = 0.5f;
+        [Tooltip("Зацикленный клип полёта (гул винтов). Пусто — процедурная петля")]
+        [SerializeField] private AudioClip flightSound;
+        [Tooltip("Свой клип выстрела. Пусто — процедурный звук")]
+        [SerializeField] private AudioClip shotSound;
+        [Tooltip("Свой клип сигнала обнаружения цели (звучит в момент захвата). Пусто — процедурный звук")]
+        [SerializeField] private AudioClip alertSound;
+        [Tooltip("Громкость петли полёта")]
+        [SerializeField][Range(0f, 1f)] private float flightVolume = 0.25f;
+        [Tooltip("Громкость сигнала обнаружения")]
+        [SerializeField][Range(0f, 2f)] private float alertVolume = 0.8f;
 
         private Rigidbody body;
         private Transform tiltRig;
         private Quaternion tiltTarget = Quaternion.identity;
         private float bobPhase;
-        private RobotVoice voice;
         private float nextFireTime;
         private int nextFirePoint = -1;
         private float orbitAngle;
@@ -198,8 +207,6 @@ namespace CarGame.Combat
             // визуал под него. Коллайдеры остаются на корне — физика не плывёт.
             BuildTiltRig();
 
-            voice = gameObject.AddComponent<RobotVoice>();
-
             audioSource = gameObject.AddComponent<AudioSource>();
             audioSource.playOnAwake = false;
             audioSource.spatialBlend = 1f;
@@ -208,6 +215,13 @@ namespace CarGame.Combat
 
             orbitAngle = orbitPhase * Mathf.Deg2Rad;
             BaseAwake();
+
+            // Звуковые поля этого скрипта настраивают общий звуковой движок:
+            // петля винтов стартует сразу (дрон летает всегда), выстрел и
+            // сигнал обнаружения играются через Voice.
+            ApplySoundClips(null, null, flightSound, null, alertSound, shotSound,
+                -1f, -1f, -1f, alertVolume, flightVolume, shotVolume);
+
             CacheNoseAxis();
 
             // Запоминаем эталонную ориентацию носа из префаба ДО того, как любая
@@ -916,6 +930,13 @@ namespace CarGame.Combat
 
         private void PlayShotSound(Vector3 origin)
         {
+            // Свой клип из инспектора или процедурный звук — через Voice дрона.
+            if (Voice != null)
+            {
+                Voice.Shot();
+                return;
+            }
+
             if (generatedShot == null) generatedShot = ProceduralAudio.Gunshot(false);
 
             AudioSource source = audioSource != null ? audioSource : gameObject.AddComponent<AudioSource>();

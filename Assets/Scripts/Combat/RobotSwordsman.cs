@@ -84,7 +84,16 @@ namespace CarGame.Combat
         private float chaseNoProgressTimer;
         private float chaseProgress;
         private float noProgressStallTimer;
-        private RobotVoice voice;
+
+        [Header("Звуки")]
+        [Tooltip("Свой клип шагов (звучит при ходьбе/беге). Пусто — процедурный звук")]
+        [SerializeField] private AudioClip stepSound;
+        [Tooltip("Свой клип сигнала обнаружения цели (звучит в момент захвата). Пусто — процедурный звук")]
+        [SerializeField] private AudioClip alertSound;
+        [Tooltip("Громкость шагов")]
+        [SerializeField][Range(0f, 2f)] private float stepVolume = 0.35f;
+        [Tooltip("Громкость сигнала обнаружения")]
+        [SerializeField][Range(0f, 2f)] private float alertVolume = 0.8f;
 
         [Header("Память цели")]
         [Tooltip("Сколько секунд мечник помнит игрока после потери видимости (игрок побежал за стену, закрылся от обзора) и продолжает преследовать последнюю известную позицию. По ТЗ — 10 секунд.")]
@@ -104,17 +113,6 @@ namespace CarGame.Combat
         /// должны быть причиной сброса цели — он обходит преграду и помнит
         /// игрока targetMemoryDuration секунд.</summary>
         protected override bool DropTargetWhenUnreachable => false;
-
-        /// <summary>Голос робота (шаги/сигнал цели). Создаётся автоматически.</summary>
-        protected RobotVoice Voice
-        {
-            get
-            {
-                if (voice == null) voice = GetComponent<RobotVoice>();
-                if (voice == null) voice = gameObject.AddComponent<RobotVoice>();
-                return voice;
-            }
-        }
 
         private void ApplyBloodMoonBuffs()
         {
@@ -148,6 +146,10 @@ namespace CarGame.Combat
             if (animator == null) animator = GetComponentInChildren<Animator>();
 
             BaseAwake();
+
+            // Звуковые поля этого скрипта настраивают общий звуковой движок.
+            ApplySoundClips(stepSound, null, null, null, alertSound, null,
+                stepVolume, -1f, -1f, alertVolume, -1f, -1f);
 
             if (health != null) health.Died += OnDied;
         }
@@ -240,9 +242,8 @@ namespace CarGame.Combat
 
             UpdateAnimation(engaged);
 
-            RobotVoice voice = Voice;
-            if (voice != null && body != null)
-                voice.Step(new Vector3(body.linearVelocity.x, 0f, body.linearVelocity.z), engaged);
+            if (Voice != null && body != null)
+                Voice.Step(new Vector3(body.linearVelocity.x, 0f, body.linearVelocity.z), engaged);
 
             if (!engaged || Target == null) return;
             if (distance > attackRange) return;
