@@ -99,6 +99,14 @@ namespace CarGame.Combat
         // LockMovement(), читается в CanMoveNow().
         private float attackLockUntil;
         private float lastSeenTime = -100f;
+        // Последняя позиция цели, зафиксированная в момент захвата/видимости.
+        // Используется при «памяти цели»: потеряв игрока из виду (за стеной),
+        // робот бежит сюда, а не стоит на месте.
+        private Vector3 lastKnownTargetPosition;
+        private bool hasLastKnownTargetPosition;
+        // Флаг «бежим к последней виденной точке» (цель помнится, но не видна).
+        // Ставится в BaseUpdate, читается в ResolveDestination.
+        private bool chaseMemoryDestinationActive;
         private float repathTime;
         private Vector3 wanderTarget;
         private Vector3 spawnPoint;
@@ -140,6 +148,37 @@ namespace CarGame.Combat
         protected Vector3 SpawnPoint => spawnPoint;
         public Health Target { get; protected set; }
         public bool HasTarget => Target != null && !Target.IsDead;
+
+        /// <summary>Последняя виденная позиция цели (для преследования «по памяти»).
+        /// Актуальна, пока цель не сброшена после истечения памяти.</summary>
+        protected Vector3 LastKnownTargetPosition => lastKnownTargetPosition;
+
+        /// <summary>Есть ли зафиксированная последняя позиция цели.</summary>
+        protected bool HasLastKnownTargetPosition => hasLastKnownTargetPosition;
+
+        /// <summary>Сколько секунд робот помнит цель после потери видимости.
+        /// По умолчанию — сериализованный loseTargetMemory; наследник может
+        /// переопределить (мечник: 10 секунд по ТЗ).</summary>
+        protected virtual float LoseTargetMemoryOverride => -1f;
+
+        /// <summary>Сбрасывать ли цель, если проверка досягаемости (высота/уклон)
+        /// провалилась. Наследник может позволить «пробовать достать» сквозь
+        /// препятствие, чтобы робот не забывал игрока из-за преграды на пути.</summary>
+        protected virtual bool DropTargetWhenUnreachable => true;
+
+        /// <summary>Разрешена ли прямая линия до цели без проверки сектора обзора
+        /// (используется дочерними классами для движения к последней точке памяти).</summary>
+        protected bool HasClearLineOfSightToTarget()
+        {
+            return Target != null && HasLineOfSight(Target);
+        }
+
+        /// <summary>Принудительный объезд препятствия при преследовании: включает
+        /// detour даже если UpdateStuckCheck не подтвердил физический контакт.</summary>
+        protected void StartForcedDetour()
+        {
+            StartDetour();
+        }
 
         protected virtual void BaseAwake()
         {
@@ -223,11 +262,29 @@ namespace CarGame.Combat
         {
             climbing = false;
             UpdateTarget();
+
+            // Преследование «по памяти»: цель ещё активна (loseTargetMemory не
+            // истёк), но прямо сейчас не видна. Идём к последней виденной
+            // позиции — иначе робот упирался бы в стену/препятствие и стоял,
+            // хотя цель «помнится».
+            if (HasTarget && hasLastKnownTargetPosition && !IsTargetVisible(Target))
+            {
+                chaseMemoryDestinationActive = true;
+                return;
+            }
+
+            chaseMemoryDestinationActive = false;
         }
 
         private void UpdateTarget()
         {
             if (player == null) player = FindPlayer();
+
+            // Сколько секунд робот помнит цель после потери видимости.
+            // Наследник может переопределить (мечник — 10 секунд по ТЗ).
+            float memoryTime = LoseTargetMemoryOverride > 0f
+                ? LoseTargetMemoryOverride
+                : loseTargetMemory;
 
             // Пока цель есть, каждый кадр проверяем, видно ли её. Так робот не
             // уходит в стену, преследуя позицию, которую потерял из виду: как
@@ -244,14 +301,17 @@ namespace CarGame.Combat
                     return;
                 }
 
-                if (IsTargetVisible(Target))
+                bool visible = IsTargetVisible(Target);
+                if (visible)
                 {
                     lastSeenTime = Time.time;
+                    // Свежая видимая позиция — запоминаем её для погони «по памяти».
+                    lastKnownTargetPosition = Target.transform.position;
+                    hasLastKnownTargetPosition = true;
                 }
-                else if (!HasSightMemory || Time.time - lastSeenTime > loseTargetMemory || !IsTargetReachable(Target))
+                else if (Time.time - lastSeenTime > memoryTime)
                 {
-                    // HasSightMemory == false (мечник): цель теряется мгновенно,
-                    // как только пропала из вида — без «памяти» в 4 секунды.
+                    // Память истекла: цель забыта, возврат к патрулю.
                     Target = null;
                     detourActive = false;
 
@@ -259,6 +319,16 @@ namespace CarGame.Combat
                     // После сброса цели он обязан вернуться в нормальный цикл
                     // патруля, а не залипнуть в позе преследования: короткий
                     // отдых на месте, новый точку маршрута берёт ResolvePatrolDestination.
+                    BeginPause(0.8f);
+                    return;
+                }
+                else if (!IsTargetReachable(Target) && DropTargetWhenUnreachable)
+                {
+                    // Цель стала геометрически недосягаемой (например игрок на
+                    // крыше) — забываем сразу. Мечник этот сброс отключил: упор
+                    // в препятствие не должен быть причиной «забыть» игрока.
+                    Target = null;
+                    detourActive = false;
                     BeginPause(0.8f);
                     return;
                 }
@@ -963,6 +1033,14 @@ namespace CarGame.Combat
         /// <summary>Множитель здоровья от кровавой луны (применяется один раз при спавне).</summary>
         protected static float BloodMoonHealthMultiplier =>
             BloodMoonState.IsActive ? Mathf.Max(0.01f, BloodMoonState.EnemyHealthMultiplier) : 1f;
+
+        // ---- Диагностика застревания для дочерних классов -------------------
+        // Мечник использует эти значения, чтобы самому засекать «упёрся в
+        // препятствие» и включать принудительный объезд, не дожидаясь мягких
+        // условий UpdateStuckCheck (там обязателен физический контакт вплотную).
+        protected float StuckSpeedValue => stuckSpeed;
+        protected float StuckDelayValue => stuckDelay;
+        protected bool IsDetourActive => detourActive;
 
         protected static PlayerController FindPlayer()
         {

@@ -70,7 +70,15 @@ namespace CarGame.Combat
         private bool hadTarget;
         private string currentState;
         private float attackLockTime;
-        private float attackStopTimer;
+        // Хвост анимации атаки: сколько секунд после удара ещё считать робота
+        // «бьющим» (запрет движения). Считается от реальной длины клипа Attack,
+        // а не от cooldown — раньше из-за этого робот залипал в стойке удара.
+        private float attackAnimTail;
+        // Страховка от вечного «залипания» в Attack: если аниматор по какой-то
+        // причине не покинул состояние атаки дольше this секунд — форсируем
+        // выход и принудительно переключаем состояние (Run/Walk/Idle).
+        private const float MaxAttackHold = 1.5f;
+        private float attackEnteredTime;
         // Диагностика преследования: робот больше НЕ сдаётся и не сбрасывает
         // цель при отсутствии прогресса (по ТЗ погоня бессрочная). Поля оставлены
         // для наблюдения за дистанцией/прогрессом; chaseGiveUpTime больше не
@@ -79,12 +87,27 @@ namespace CarGame.Combat
         private float prevChaseDistance = -1f;
         private float chaseNoProgressTimer;
         private float chaseProgress;
+        private float noProgressStallTimer;
         private RobotVoice voice;
+
+        [Header("Память цели")]
+        [Tooltip("Сколько секунд мечник помнит игрока после потери видимости (игрок побежал за стену, закрылся от обзора) и продолжает преследовать последнюю известную позицию. По ТЗ — 10 секунд.")]
+        [SerializeField] private float targetMemoryDuration = 10f;
 
         public Animator Animator => animator;
 
-        /// <summary>Мечник преследует ТОЛЬКО если видит цель: без памяти цели.</summary>
-        protected override bool HasSightMemory => false;
+        /// <summary>
+        /// Мечник ПОМНИТ цель: потерял игрока из виду (тот спрятался за стеной,
+        /// преградилось что-то) — робот не «забывает» его мгновенно, а бежит к
+        /// последней виденной позиции ещё targetMemoryDuration секунд (по ТЗ 10).
+        /// Только отстояв память целиком, мечник возвращается к патрулю.
+        /// </summary>
+        protected override bool HasSightMemory => true;
+
+        /// <summary>Мечник: упор в препятствие или временная потеря видимости НЕ
+        /// должны быть причиной сброса цели — он обходит преграду и помнит
+        /// игрока targetMemoryDuration секунд.</summary>
+        protected override bool DropTargetWhenUnreachable => false;
 
         /// <summary>Голос робота (шаги/сигнал цели). Создаётся автоматически.</summary>
         protected RobotVoice Voice
@@ -103,6 +126,14 @@ namespace CarGame.Combat
             moveSpeed *= BloodMoonSpeedMultiplier;
             attackDamage *= BloodMoonDamageMultiplier;
         }
+
+        /// <summary>
+        /// Память цели у мечника — 10 секунд по ТЗ. В префабах сериализовано
+        /// старое значение loseTargetMemory (4 с); переопределяем его на
+        /// targetMemoryDuration при старте, чтобы поведение гарантированно
+        /// соответствовало требованию «помнить игрока 10 секунд».
+        /// </summary>
+        protected override float LoseTargetMemoryOverride => targetMemoryDuration;
 
         private void Awake()
         {
@@ -131,7 +162,10 @@ namespace CarGame.Combat
 
             BaseUpdate();
 
-            if (attackStopTimer > 0f) attackStopTimer -= Time.deltaTime;
+            // Хвост анимации удара тикает отдельно от cooldown: робот стоит
+            // ровно столько, сколько длится клип Attack (~0.42 с), а не весь
+            // интервал между ударами — иначе он «залипал» в стойке атаки.
+            if (attackAnimTail > 0f) attackAnimTail -= Time.deltaTime;
 
             Vector3 destination = ResolveDestination();
             Vector3 flatDelta = Vector3.ProjectOnPlane(destination - FrontPosition, Vector3.up);
@@ -151,22 +185,47 @@ namespace CarGame.Combat
                 float progress = (prevChaseDistance < 0f ? 0f : prevChaseDistance - distance);
                 chaseProgress += progress;
                 chaseNoProgressTimer += Time.deltaTime;
+
+                // Робот упёрся в препятствие и стоит (скорость почти нулевая,
+                // идти он пытается) — цель НЕ забываем: включаем принудительный
+                // объезд в обход «мягких» условий UpdateStuckCheck (контакт с
+                // коллайдером может не фиксироваться из-за отталкивания физикой).
+                bool stalled = body != null
+                    && new Vector2(body.linearVelocity.x, body.linearVelocity.z).magnitude < StuckSpeedValue;
+                if (stalled) noProgressStallTimer += Time.deltaTime;
+                else noProgressStallTimer = 0f;
+
+                if (noProgressStallTimer >= StuckDelayValue && !IsDetourActive)
+                {
+                    noProgressStallTimer = 0f;
+                    ForceDetourAroundObstacle();
+                }
             }
             else
             {
                 chaseNoProgressTimer = 0f;
                 chaseProgress = 0f;
+                noProgressStallTimer = 0f;
             }
             prevChaseDistance = engaged ? distance : -1f;
 
-            bool striking = attackStopTimer > 0f;
+            bool striking = attackAnimTail > 0f;
 
-            // Направление задаём ВСЕГДА, когда можно идти — в том числе во время
-            // застоя (striking): раньше при striking direction был нулём, робот
+            // Анти-залипание преследования: если робот НЕ приближается к цели
+            // (упёрся в препятствие) — цель НЕ сбрасывается. Мечник помнит
+            // игрока targetMemoryDuration секунд и обходит преграду
+            // (ComputeAvoidance/slide/scan/detour в EnemyBase). Направление
+            // задаём ВСЕГДА, когда можно идти — в том числе во время застоя
+            // (striking): раньше при striking direction был нулём, робот
             // останавливался посреди преследования и аниматор уходил из Run.
-            // Остановка движения теперь управляется только PatrolAllowsMove()
-            // (пауза маршрута) и strike-блокировкой скорости ниже.
-            Vector3 direction = ComputeAvoidance(flatDelta);
+            Vector3 desiredDirection = flatDelta;
+            if (desiredDirection.sqrMagnitude < 0.0001f && engaged && !IsTargetColliderVisible())
+            {
+                // Цель «внутри» робота или вплотную, но не видна (за стеной):
+                // идём к последней видимой точке, чтобы не стоять на месте.
+                desiredDirection = LastKnownTargetPosition - transform.position;
+            }
+            Vector3 direction = ComputeAvoidance(desiredDirection);
 
             UpdateStuckCheck(
                 body != null ? body.linearVelocity : Vector3.zero,
@@ -194,7 +253,12 @@ namespace CarGame.Combat
             if (Time.time < nextAttackTime) return;
 
             nextAttackTime = Time.time + attackCooldown;
-            attackStopTimer = Mathf.Max(attackCooldown, AttackStateLength());
+            // Стоять робот должен ровно столько, сколько длится сам замах
+            // (клип Attack), а не весь кулдаун. Раньше attackStopTimer =
+            // max(cooldown, длина клипа) запирал мечника в стойке удара на всю
+            // паузу между атаками — визуально это выглядело как «застрял в
+            // анимации атаки после первого удара».
+            attackAnimTail = AttackStateLength();
             PlayAttack();
             Strike(Target, distance);
         }
@@ -229,13 +293,27 @@ namespace CarGame.Combat
             {
                 attackLockTime -= Time.deltaTime;
 
-                // Анимация атаки доиграна, но цель всё ещё активна: НЕ даём
-                // аниматору остаться в Idle (контроллер сам уходит Attack→Idle).
-                // Сбрасываем currentState и пропускаем кадр через обычный выбор
-                // состояния — ниже будет выбран Run, робот продолжит
-                // преследование без «залипания» стойки после удара.
-                if (attackLockTime <= 0f && engaged)
+                // Страховка: анимация атаки не должна длиться вечно. Если по
+                // какой-то причине (сбитый переход, потерянный триггер) робот
+                // «завис» в Attack дольше MaxAttackHold секунд — принудительно
+                // завершаем блокировку и переключаемся на актуальное состояние.
+                bool overstayed = Time.time - attackEnteredTime > MaxAttackHold;
+
+                if (attackLockTime <= 0f || overstayed)
                 {
+                    // Анимация атаки доиграна (или перестраховочно сброшена),
+                    // а цель всё ещё активна: НЕ даём аниматору остаться в
+                    // Idle/Attack — сбрасываем currentState и пропускаем кадр
+                    // через обычный выбор состояния ниже (будет выбран Run или
+                    // Walk), робот продолжит преследование без «залипания».
+                    attackLockTime = 0f;
+                    currentState = null;
+                }
+                else if (!IsAnimatorInAttackState())
+                {
+                    // Контроллер сам ушёл из Attack раньше ожидаемого времени —
+                    // немедленно возвращаем управление выбором состояния.
+                    attackLockTime = 0f;
                     currentState = null;
                 }
                 else
@@ -373,8 +451,18 @@ namespace CarGame.Combat
 
         private void PlayAttack()
         {
-            if (!animateStrike || animator == null) return;
-            if (string.IsNullOrEmpty(attackState)) return;
+            attackEnteredTime = Time.time;
+
+            if (!animateStrike || animator == null)
+            {
+                attackLockTime = 0f;
+                return;
+            }
+            if (string.IsNullOrEmpty(attackState))
+            {
+                attackLockTime = 0f;
+                return;
+            }
 
             // SwordBot.controller переключает атаку триггером "Attack":
             // Idle/Walk/Run → Attack по этому триггеру, Attack → Idle сам.
@@ -383,17 +471,72 @@ namespace CarGame.Combat
             {
                 ApplyState(attackState);
                 attackLockTime = AttackStateLength();
+
+                // Страховка от «вечной атаки»: если аниматор за пару кадров не
+                // ушёл в состояние Attack (переход сбит, параметр не тот),
+                // блокировку выбора состояния снимаем — робот продолжит бег.
+                if (!IsAnimatorInAttackState())
+                {
+                    attackLockTime = 0f;
+                    currentState = null;
+                }
                 return;
             }
 
             int hash = Animator.StringToHash(attackState);
-            if (!HasState(hash)) return;
+            if (!HasState(hash))
+            {
+                attackLockTime = 0f;
+                return;
+            }
 
             currentState = attackState;
             attackLockTime = AttackStateLength();
 
             if (crossFade <= 0.001f) animator.Play(hash, 0, 0f);
             else animator.CrossFadeInFixedTime(hash, crossFade * 0.5f, 0, 0f);
+        }
+
+        /// <summary>
+        /// Находится ли аниматор прямо сейчас в состоянии атаки (или в переходе
+        /// из него). Используется как страховка: пока идёт замах, код не трогает
+        /// аниматор; если же замах закончился, а управление почему-то осталось
+        /// заблокированным — оно принудительно освобождается.
+        /// </summary>
+        private bool IsAnimatorInAttackState()
+        {
+            if (animator == null || !animator.isActiveAndEnabled) return false;
+            if (animator.runtimeAnimatorController == null) return false;
+            if (string.IsNullOrEmpty(attackState)) return false;
+
+            int hash = Animator.StringToHash(attackState);
+            for (int layer = 0; layer < animator.layerCount; layer++)
+            {
+                AnimatorStateInfo current = animator.GetCurrentAnimatorStateInfo(layer);
+                if (current.fullPathHash == hash || current.shortNameHash == hash) return true;
+
+                AnimatorStateInfo next = animator.GetNextAnimatorStateInfo(layer);
+                if (next.fullPathHash == hash || next.shortNameHash == hash) return true;
+            }
+
+            return false;
+        }
+
+        /// <summary>Видна ли цель напрямую (без проверки сектора обзора).</summary>
+        private bool IsTargetColliderVisible()
+        {
+            return Target != null && HasClearLineOfSightToTarget();
+        }
+
+        /// <summary>
+        /// Принудительный объезд препятствия во время преследования: включается,
+        /// когда робот пытается бежать к цели, но стоит на месте (упёрся).
+        /// Обходит мягкие условия UpdateStuckCheck (там нужен физический контакт
+        /// вплотную, который не всегда фиксируется из-за отталкивания коллайдеров).
+        /// </summary>
+        private void ForceDetourAroundObstacle()
+        {
+            StartForcedDetour();
         }
 
         private float AttackStateLength()
