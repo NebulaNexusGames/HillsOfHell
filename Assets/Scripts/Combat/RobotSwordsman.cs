@@ -74,10 +74,6 @@ namespace CarGame.Combat
         // «бьющим» (запрет движения). Считается от реальной длины клипа Attack,
         // а не от cooldown — раньше из-за этого робот залипал в стойке удара.
         private float attackAnimTail;
-        // Страховка от вечного «залипания» в Attack: если аниматор по какой-то
-        // причине не покинул состояние атаки дольше this секунд — форсируем
-        // выход и принудительно переключаем состояние (Run/Walk/Idle).
-        private const float MaxAttackHold = 1.5f;
         private float attackEnteredTime;
         // Диагностика преследования: робот больше НЕ сдаётся и не сбрасывает
         // цель при отсутствии прогресса (по ТЗ погоня бессрочная). Поля оставлены
@@ -289,30 +285,34 @@ namespace CarGame.Combat
                 return;
             }
 
+            // Во время замаха (пока клип Attack реально играется в аниматоре)
+            // аниматор не трогаем — иначе оборвём удар. Как только аниматор
+            // покинул состояние Attack (сам ушёл по переходу или мы форсированно
+            // вывели его через Play в PlayAttack), управление состоянием
+            // возвращается в этот же кадр: ниже выбирается актуальное состояние
+            // (при цели — Run, на патруле — Walk/Idle). Раньше блокировка
+            // держалась таймером attackLockTime, и при любой рассинхронизации
+            // (таймер истёк раньше/позже реального клипа, переход Attack→Idle
+            // не сработал) мечник залипал в последнем кадре атаки.
             if (attackLockTime > 0f)
             {
                 attackLockTime -= Time.deltaTime;
 
-                // Страховка: анимация атаки не должна длиться вечно. Если по
-                // какой-то причине (сбитый переход, потерянный триггер) робот
-                // «завис» в Attack дольше MaxAttackHold секунд — принудительно
-                // завершаем блокировку и переключаемся на актуальное состояние.
-                bool overstayed = Time.time - attackEnteredTime > MaxAttackHold;
-
-                if (attackLockTime <= 0f || overstayed)
+                if (!IsAnimatorInAttackState())
                 {
-                    // Анимация атаки доиграна (или перестраховочно сброшена),
-                    // а цель всё ещё активна: НЕ даём аниматору остаться в
-                    // Idle/Attack — сбрасываем currentState и пропускаем кадр
-                    // через обычный выбор состояния ниже (будет выбран Run или
-                    // Walk), робот продолжит преследование без «залипания».
+                    // Замах доигран — немедленно снимаем блокировку.
                     attackLockTime = 0f;
                     currentState = null;
                 }
-                else if (!IsAnimatorInAttackState())
+                else if (attackLockTime <= 0f)
                 {
-                    // Контроллер сам ушёл из Attack раньше ожидаемого времени —
-                    // немедленно возвращаем управление выбором состояния.
+                    // Таймер вышел, но аниматор всё ещё в Attack (переход не
+                    // отработал) — принудительно выводим его через Play.
+                    // ResetTrigger чистит возможный pending-триггер Attack,
+                    // чтобы он не вернул робота обратно в замах.
+                    ResetAttackTrigger();
+                    int forcedHash = Animator.StringToHash(engaged ? runState : idleState);
+                    if (HasState(forcedHash)) animator.Play(forcedHash, 0, 0f);
                     attackLockTime = 0f;
                     currentState = null;
                 }
@@ -391,7 +391,16 @@ namespace CarGame.Combat
 
             if (type == AnimatorControllerParameterType.Trigger)
             {
-                currentState = state;
+                // Анимация атаки НЕ должна блокировать выбор следующего
+                // состояния: как только замах доигран (или аниматор сам ушёл
+                // из Attack), сразу выбираем актуальное состояние — при цели
+                // это Run, на патруле Walk/Idle. Раньше здесь стоял ранний
+                // выход, из-за чего после удара мечник оставался в Idle
+                // (Attack→Idle) или вообще в последнем кадре Attack, пока не
+                // сменится desired — визуально это выглядело как «залип в
+                // анимации атаки».
+                if (state == attackState) currentState = null;
+
                 ResetOtherStateBools(state);
                 // Сброс до установки: иначе «залипший» с прошлых циклов триггер
                 // срабатывал повторно и аниматор клинил между состояниями.
@@ -465,7 +474,9 @@ namespace CarGame.Combat
             }
 
             // SwordBot.controller переключает атаку триггером "Attack":
-            // Idle/Walk/Run → Attack по этому триггеру, Attack → Idle сам.
+            // Idle/Walk/Run → Attack по этому триггеру; из Attack есть переходы
+            // в Idle (по умолчанию), Run и Walk (с Exit Time) — после доигранного
+            // замаха аниматор сам уходит в актуальное состояние движения.
             // Форсированный Play здесь только сбивал переходы.
             if (IsStateParameter(attackState))
             {
@@ -585,6 +596,21 @@ namespace CarGame.Combat
         private void FireTrigger(string parameter)
         {
             if (HasParameter(parameter)) animator.SetTrigger(parameter);
+        }
+
+        /// <summary>
+        /// Гасит pending-триггер атаки. Нужен для принудительного выхода из
+        /// состояния Attack: если триггер остался неподхваченным, следующий же
+        /// переход вернул бы робота обратно в замах («вечная атака»).
+        /// </summary>
+        private void ResetAttackTrigger()
+        {
+            if (animator == null || string.IsNullOrEmpty(attackState)) return;
+            if (GetParameterType(attackState) == AnimatorControllerParameterType.Trigger
+                && HasParameter(attackState))
+            {
+                animator.ResetTrigger(attackState);
+            }
         }
 
         private bool HasParameter(string parameter)
