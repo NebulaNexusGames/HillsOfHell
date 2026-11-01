@@ -499,8 +499,20 @@ namespace CarGame.Combat
             else
             {
                 float throttle = IsPathClear(direction) ? 1f : 0.2f;
-                velocity = Vector3.MoveTowards(velocity, direction.normalized * speed * throttle, moveSpeed / Mathf.Max(0.05f, accelerationTime) * Time.deltaTime);
+
+                // Инерция мультикоптера: дрон догоняет желаемую скорость через
+                // velocityResponse, а не телепортируется в неё за кадр. Это и
+                // есть «физика дрона» — плавный разгон и торможение с опережением.
+                Vector3 desired = direction.normalized * speed * throttle;
+                velocity = Vector3.Lerp(velocity, desired, Mathf.Clamp01(velocityResponse * Time.deltaTime));
             }
+
+            // Вертикальное покачивание зависания: амплитуда из инспектора,
+            // частота из bobFrequency. По горизонтали инерция, по вертикали —
+            // мягкий дрейф, как у реального коптера на автопилоте.
+            bobPhase += Time.deltaTime * bobFrequency * Mathf.PI * 2f;
+            velocity.y += Mathf.Cos(bobPhase) * bobAmplitude * bobFrequency * Mathf.PI * 2f * Time.deltaTime * 6f;
+            velocity.y = Mathf.Clamp(velocity.y, -moveSpeed * 0.5f, moveSpeed * 0.5f);
 
             if (body == null)
             {
@@ -887,11 +899,10 @@ namespace CarGame.Combat
         /// </summary>
         private void UpdateTiltTarget(Vector3 planarVelocity)
         {
-            float maxTilt = 28f;
+            float maxTilt = Mathf.Clamp(maxTiltAngle, 5f, 45f);
             float speedForTilt = moveSpeed > 0.01f ? moveSpeed : 4f;
             float t = Mathf.Clamp01(planarVelocity.magnitude / speedForTilt);
 
-            bobPhase += Time.deltaTime * 2.2f;
             float hoverBob = (planarVelocity.sqrMagnitude < 0.25f)
                 ? Mathf.Sin(bobPhase) * 1.6f
                 : 0f;

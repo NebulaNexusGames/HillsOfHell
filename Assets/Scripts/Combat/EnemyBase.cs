@@ -222,6 +222,12 @@ namespace CarGame.Combat
                 {
                     Target = null;
                     detourActive = false;
+
+                    // Цель потеряли не «на ровном месте»: робот реально шёл к ней.
+                    // После сброса цели он обязан вернуться в нормальный цикл
+                    // патруля, а не залипнуть в позе преследования: короткий
+                    // отдых на месте, новый точку маршрута берёт ResolvePatrolDestination.
+                    BeginPause(0.8f);
                     return;
                 }
             }
@@ -245,9 +251,23 @@ namespace CarGame.Combat
 
             if (requireLineOfSight && !HasLineOfSight(candidate)) return false;
 
+            // Первый захват цели: голосовая сигнализация обнаружения. Дальше
+            // голос молчит, пока цель снова не будет потеряна и найдена.
+            if (!HadTargetLastFrame) NotifyTargetAcquired();
+
             lastSeenTime = Time.time;
             Target = candidate;
             return true;
+        }
+
+        /// <summary>
+        /// Сигнал обнаружения цели для всех роботов. Роботы без голоса просто
+        /// пропускают вызов.
+        /// </summary>
+        private void NotifyTargetAcquired()
+        {
+            RobotVoice robotVoice = GetComponent<RobotVoice>();
+            if (robotVoice != null) robotVoice.Alert();
         }
 
         protected virtual bool IsTargetReachable(Health candidate)
