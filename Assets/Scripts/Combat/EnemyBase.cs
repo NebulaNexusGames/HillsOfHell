@@ -44,8 +44,6 @@ namespace CarGame.Combat
         [SerializeField] private float patrolWaitTime = 1.5f;
         [Tooltip("Стоять на точке ровно это время, с. 0 — использовать patrolWaitTime")]
         [SerializeField] private float restDuration = 5f;
-        [Tooltip("Шанс, что робот отдыхает полный restDuration, а не короткий patrolWaitTime. 1 — всегда полный отдых")]
-        [SerializeField][Range(0f, 1f)] private float restChance = 0.75f;
         [Tooltip("Сколько шагов пройти на патруле, прежде чем остановиться на паузу и сменить направление (режим блуждания без точек). 0 — считать дистанцию вместо шагов")]
         [SerializeField] private int patrolStepsBeforeStop = 8;
         [Tooltip("Длина одного шага для подсчёта, м")]
@@ -400,6 +398,11 @@ namespace CarGame.Combat
                 return point.position;
             }
 
+            // Режим блуждания без точек. Пауза — СТРОГО restDuration секунд
+            // (по умолчанию 5), без случайного удвоения: робот доходит ~N шагов,
+            // встаёт ровно на 5 секунд и только потом выбирает новое направление.
+            float rest = restDuration > 0f ? restDuration : patrolWaitTime;
+
             if (Time.time >= pauseUntil || (wanderTarget - transform.position).sqrMagnitude < 1f)
             {
                 // Счётчик пройденного: сбрасываем при каждой смене точки.
@@ -408,8 +411,7 @@ namespace CarGame.Combat
 
                 Vector2 offset = Random.insideUnitCircle * patrolRadius;
                 wanderTarget = new Vector3(spawnPoint.x + offset.x, spawnPoint.y, spawnPoint.z + offset.y);
-                float rest = restDuration > 0f ? restDuration : patrolWaitTime;
-                BeginPause(Random.Range(rest, rest * 2f));
+                BeginPause(rest);
             }
 
             // Прошёл «N шагов» (или метров) — встаёт на restDuration секунд и
@@ -427,7 +429,7 @@ namespace CarGame.Combat
                 patrolWalked = 0f;
                 Vector2 nextOffset = Random.insideUnitCircle * patrolRadius;
                 wanderTarget = new Vector3(spawnPoint.x + nextOffset.x, spawnPoint.y, spawnPoint.z + nextOffset.y);
-                BeginPause(restDuration > 0f ? restDuration : patrolWaitTime);
+                BeginPause(rest);
                 return transform.position;
             }
 
@@ -436,7 +438,8 @@ namespace CarGame.Combat
 
         protected void BeginPause(float duration)
         {
-            if (restDuration > 0f && Random.value <= restChance) duration = restDuration;
+            // Длительность паузы берётся ровно из параметра: отдых на точке
+            // патруля длится restDuration секунд, а не «сколько повезёт».
             pauseUntil = Time.time + Mathf.Max(0.1f, duration > 0f ? duration : patrolWaitTime);
         }
 
