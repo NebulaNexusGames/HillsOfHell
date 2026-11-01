@@ -18,6 +18,8 @@ namespace CarGame.Combat
         [SerializeField] private LayerMask sightBlockers = ~0;
         [Tooltip("Сколько секунд не нужно видеть цель, чтобы забыть её")]
         [SerializeField] private float loseTargetMemory = 4f;
+        [Tooltip("Требовать для захвата и удержания цели сектор обзора перед роботом. Мечник: погоня только если реально увидел. 0 — без ограничения угла")]
+        [SerializeField] private float sightAngleDegrees = 120f;
         [Tooltip("Проверять, дотягивается ли робот до цели по высоте и расстоянию. Выключи — будет преследовать любую цель в зоне видимости")]
         [SerializeField] private bool requireReachableTarget = true;
         [Tooltip("Высота цели над её точкой отсчёта, м. Обычно центр груди или капота")]
@@ -122,6 +124,11 @@ namespace CarGame.Combat
         public Vector3 FrontForward => transform.forward;
         protected Vector3 FrontOffset { get; private set; }
         protected float PatrolSpeed => patrolSpeed;
+        /// <summary>
+        /// Держать ли цель после потери видимости (loseTargetMemory секунд).
+        /// Мечник переопределяет в false: погоня только пока реально видит.
+        /// </summary>
+        protected virtual bool HasSightMemory => true;
         protected float PatrolRadius => patrolRadius;
         protected float PatrolWaitTime => patrolWaitTime;
         protected float PatrolPointTolerance => patrolPointTolerance;
@@ -236,8 +243,10 @@ namespace CarGame.Combat
                 {
                     lastSeenTime = Time.time;
                 }
-                else if (Time.time - lastSeenTime > loseTargetMemory || !IsTargetReachable(Target))
+                else if (!HasSightMemory || Time.time - lastSeenTime > loseTargetMemory || !IsTargetReachable(Target))
                 {
+                    // HasSightMemory == false (мечник): цель теряется мгновенно,
+                    // как только пропала из вида — без «памяти» в 4 секунды.
                     Target = null;
                     detourActive = false;
 
@@ -266,6 +275,9 @@ namespace CarGame.Combat
             Vector3 toTarget = candidate.transform.position - transform.position;
             if (toTarget.magnitude > DetectRange) return false;
             if (!IsTargetReachable(candidate)) return false;
+
+            // Захват цели — только если она в секторе обзора перед роботом.
+            if (!IsWithinSightCone(candidate)) return false;
 
             if (requireLineOfSight && !HasLineOfSight(candidate)) return false;
 
@@ -309,9 +321,32 @@ namespace CarGame.Combat
             Vector3 flat = Vector3.ProjectOnPlane(candidate.transform.position - transform.position, Vector3.up);
             if (flat.magnitude > DetectRange) return false;
 
+            // «Увидел» значит и в секторе обзора: цель за спиной не считается видимой.
+            if (!IsWithinSightCone(candidate)) return false;
+
             if (requireLineOfSight && !HasLineOfSight(candidate)) return false;
 
             return true;
+        }
+
+        /// <summary>
+        /// Находится ли цель в горизонтальном секторе обзора перед роботом
+        /// (sightAngleDegrees — полный угол). 0 или больше 179 — без ограничения.
+        /// </summary>
+        protected bool IsWithinSightCone(Health candidate)
+        {
+            if (candidate == null) return false;
+            if (sightAngleDegrees <= 0f || sightAngleDegrees >= 179f) return true;
+
+            Vector3 toTarget = candidate.transform.position - transform.position;
+            Vector3 flat = Vector3.ProjectOnPlane(toTarget, Vector3.up);
+            if (flat.sqrMagnitude < 0.0001f) return true;
+
+            Vector3 forward = Vector3.ProjectOnPlane(transform.forward, Vector3.up);
+            if (forward.sqrMagnitude < 0.0001f) return true;
+
+            float angle = Vector3.Angle(forward.normalized, flat.normalized);
+            return angle <= sightAngleDegrees * 0.5f;
         }
 
         protected bool HasLineOfSight(Health target)

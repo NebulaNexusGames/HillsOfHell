@@ -42,15 +42,13 @@ namespace CarGame.Combat
         [SerializeField] private float crossFade = 0.12f;
         [Tooltip("Порог скорости, выше которого робот на патруле идёт (Walk), а не стоит (Idle), м/с")]
         [SerializeField] private float walkThreshold = 0.25f;
-        [Tooltip("Скорость, с которой анимация преследования играет ХОДЬБУ (Walk), а не бег. Мечник в бою шагает к цели, а не бежит. 0 — играть Run как раньше")]
-        [SerializeField] private float chaseAnimSpeed = 1f;
 
         [Header("Названия состояний в Animator")]
         [Tooltip("Стоит на месте, цель не видна")]
         [SerializeField] private string idleState = "Idle";
         [Tooltip("Идёт по патрулю, цель не видна")]
         [SerializeField] private string walkState = "Walk";
-        [Tooltip("Бежит на цель")]
+        [Tooltip("Бежит на цель (анимация Run). В SwordBot.controller переход Idle→Run идёт через триггер Run — код шлёт именно его")]
         [SerializeField] private string runState = "Run";
         [Tooltip("Атака")]
         [SerializeField] private string attackState = "Attack";
@@ -76,6 +74,9 @@ namespace CarGame.Combat
         private RobotVoice voice;
 
         public Animator Animator => animator;
+
+        /// <summary>Мечник преследует ТОЛЬКО если видит цель: без памяти цели.</summary>
+        protected override bool HasSightMemory => false;
 
         /// <summary>Голос робота (шаги/сигнал цели). Создаётся автоматически.</summary>
         protected RobotVoice Voice
@@ -193,17 +194,19 @@ namespace CarGame.Combat
             Vector3 velocity = body != null ? body.linearVelocity : Vector3.zero;
             float speed = new Vector2(velocity.x, velocity.z).magnitude;
 
-            SetFloat("MoveSpeed", speed);
-            SetBool("InCombat", engaged);
+            // SwordBot.controller НЕ имеет параметров MoveSpeed/InCombat — он
+            // управляется триггерами Idle / Walk / Run / Attack. Определяем это
+            // динамически: если у контроллера есть хотя бы один из триггеров
+            // состояний, переключаем анимацию ТОЛЬКО через SetTrigger и никогда
+            // не зовём animator.Play() — иначе Play каждый кадр обрывал цикл
+            // шагов и робот «топтался на месте».
+            bool triggerDriven = HasParameter(idleState) || HasParameter(walkState) || HasParameter(runState);
 
-            // Ключ к «бегу на месте»: Play/CrossFade в обход переходовAnimator
-            // каждый кадр сбрасывали состояние в начало — цикл шагов не
-            // доигрывался и ноги дёргались на месте. Если контроллер управляет
-            // движением через параметры (MoveSpeed / InCombat), код больше НИЧЕГО
-            // не форсирует: аниматор сам переключает Idle/Walk/Run по значениям.
-            bool animatorDriven = HasParameter("MoveSpeed") || HasParameter("InCombat");
-            if (animatorDriven)
+            if (!triggerDriven)
             {
+                // Старый путь для контроллеров, живущих на параметрах движения.
+                SetFloat("MoveSpeed", speed);
+                SetBool("InCombat", engaged);
                 animator.speed = 1f;
                 currentState = null;
                 return;
@@ -215,46 +218,46 @@ namespace CarGame.Combat
                 return;
             }
 
-            // Пока робот реально не двигается, держим Idle, даже если цель рядом.
-            // Run должен возвращаться только вместе с движением, а не сразу после удара.
-            bool moving = speed > walkThreshold;
-            if (!moving)
-            {
-                PlayState(idleState);
-                animator.speed = 1f;
-                return;
-            }
+            animator.speed = 1f;
 
-            // Преследование играется ХОДЬБОЙ (Walk), а не бегом: у этой модели
-            // нет нормального Run-цикла — на преследовании ноги «крутят на
-            // месте». Поэтому в бою включаем то же состояние Walk, что и на
-            // патруле, но проигрываем его в chaseAnimSpeed раз быстрее, чтобы
-            // робот выглядел идущим к цели, а не скользящим.
-            if (engaged && chaseAnimSpeed > 0.01f)
+            // Приоритеты: атака уже запущена триггером Attack и сама вернёт в
+            // Idle переходом контроллера. Здесь выбираем только стойку/ходьбу/бег.
+            string desired;
+            if (engaged)
             {
-                PlayState(walkState);
-                animator.speed = Mathf.Max(0.05f, chaseAnimSpeed);
+                // Увидел цель → бег к ней (анимация Run). Если бежать некуда
+                // (цель в пределах удара и робот стоит) — остаёмся в Run-стойке,
+                // атаку инициирует блок Strike выше.
+                desired = runState;
+            }
+            else if (speed > walkThreshold)
+            {
+                // Патрулирование: идём анимацией Walk.
+                desired = walkState;
             }
             else
             {
-                PlayState(engaged ? runState : walkState);
-                animator.speed = 1f;
+                // Пауза на 5 секунд / простоял после потери цели — Idle.
+                desired = idleState;
             }
+
+            FireStateTrigger(desired);
         }
 
-        private void PlayState(string state)
+        /// <summary>
+        /// Шлёт Animator-триггер с именем состояния (Idle/Walk/Run). Триггеры
+        /// в SwordBot.controller условные: переход происходит из текущего
+        /// состояния по этому триггеру, поэтому цикл ходьбы/бега доигрывается
+        /// целиком, а не перезапускается каждый кадр.
+        /// </summary>
+        private void FireStateTrigger(string state)
         {
-            if (animator == null || string.IsNullOrEmpty(state)) return;
+            if (string.IsNullOrEmpty(state)) return;
             if (currentState == state) return;
+            if (!HasParameter(state)) return;
 
             currentState = state;
-            int hash = Animator.StringToHash(state);
-
-            if (HasState(hash))
-            {
-                if (crossFade <= 0.001f) animator.Play(hash, 0, 0f);
-                else animator.CrossFadeInFixedTime(hash, crossFade, 0, 0f);
-            }
+            animator.SetTrigger(state);
         }
 
         private void PlayAttack()
@@ -262,18 +265,19 @@ namespace CarGame.Combat
             if (!animateStrike || animator == null) return;
             if (string.IsNullOrEmpty(attackState)) return;
 
-            int hash = Animator.StringToHash(attackState);
-            if (!HasState(hash)) return;
-
-            // Если контроллер сам переключает состояния по параметрам, удар
-            // тоже запускается триггером, а не форсированным Play — иначе
-            // Play каждый раз обрывает боевой цикл и «ломает» анимацию.
-            if (HasParameter("Attack"))
+            // SwordBot.controller переключает атаку триггером "Attack":
+            // Idle/Walk/Run → Attack по этому триггеру, Attack → Idle сам.
+            // Форсированный Play здесь только сбивал переходы.
+            if (HasParameter(attackState))
             {
-                FireTrigger("Attack");
+                FireTrigger(attackState);
+                currentState = attackState;
                 attackLockTime = AttackStateLength();
                 return;
             }
+
+            int hash = Animator.StringToHash(attackState);
+            if (!HasState(hash)) return;
 
             currentState = attackState;
             attackLockTime = AttackStateLength();
