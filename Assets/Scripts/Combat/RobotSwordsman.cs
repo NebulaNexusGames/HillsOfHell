@@ -64,6 +64,13 @@ namespace CarGame.Combat
         private string currentState;
         private float attackLockTime;
         private float attackStopTimer;
+        // Анти-залипание преследования: если робот не приближается к цели
+        // (упёрся в невидимый коллайдер/стену), после chaseGiveUpTime секунд
+        // без прогресса цель сбрасывается и возвращается патруль.
+        [SerializeField] private float chaseGiveUpTime = 3f;
+        private float prevChaseDistance = -1f;
+        private float chaseNoProgressTimer;
+        private float chaseProgress;
         private RobotVoice voice;
 
         public Animator Animator => animator;
@@ -120,6 +127,31 @@ namespace CarGame.Combat
             float distance = flatDelta.magnitude;
 
             bool engaged = HasTarget;
+
+            // Дистанция преследования: если робот упёрся в невидимый коллайдер
+            // (стекло, триггер-блокер) и физически не может подойти ближе —
+            // цель всё равно «не видна для атаки». Чтобы не залипать в беге на
+            // месте, при отсутствии прогресса цель сбрасывается и робот
+            // возвращается в патруль.
+            if (engaged && distance > attackRange * 1.2f)
+            {
+                float progress = (prevChaseDistance < 0f ? 0f : prevChaseDistance - distance);
+                chaseProgress += progress;
+                chaseNoProgressTimer += Time.deltaTime;
+                if (chaseNoProgressTimer > chaseGiveUpTime && chaseProgress < 0.35f)
+                {
+                    Target = null;
+                    BeginPause(0.8f);
+                    engaged = false;
+                }
+            }
+            else
+            {
+                chaseNoProgressTimer = 0f;
+                chaseProgress = 0f;
+            }
+            prevChaseDistance = engaged ? distance : -1f;
+
             bool striking = attackStopTimer > 0f;
 
             Vector3 direction = striking ? Vector3.zero : ComputeAvoidance(flatDelta);

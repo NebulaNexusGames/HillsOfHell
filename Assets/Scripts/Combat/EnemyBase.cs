@@ -214,6 +214,16 @@ namespace CarGame.Combat
             // только зрение пропало и память истекла — цель сбрасывается.
             if (HasTarget)
             {
+                // Мёртвый или уничтоженный объект цели — сброс мгновенно,
+                // иначе HasTarget ещё долго даёт true и робот «бежит» к нулю.
+                if (Target == null || Target.Equals(null) || Target.IsDead)
+                {
+                    Target = null;
+                    detourActive = false;
+                    BeginPause(0.8f);
+                    return;
+                }
+
                 if (IsTargetVisible(Target))
                 {
                     lastSeenTime = Time.time;
@@ -251,23 +261,9 @@ namespace CarGame.Combat
 
             if (requireLineOfSight && !HasLineOfSight(candidate)) return false;
 
-            // Первый захват цели: голосовая сигнализация обнаружения. Дальше
-            // голос молчит, пока цель снова не будет потеряна и найдена.
-            if (!HadTargetLastFrame) NotifyTargetAcquired();
-
             lastSeenTime = Time.time;
             Target = candidate;
             return true;
-        }
-
-        /// <summary>
-        /// Сигнал обнаружения цели для всех роботов. Роботы без голоса просто
-        /// пропускают вызов.
-        /// </summary>
-        private void NotifyTargetAcquired()
-        {
-            RobotVoice robotVoice = GetComponent<RobotVoice>();
-            if (robotVoice != null) robotVoice.Alert();
         }
 
         protected virtual bool IsTargetReachable(Health candidate)
@@ -350,7 +346,8 @@ namespace CarGame.Combat
 
         protected Vector3 ResolveDestination()
         {
-            if (HasTarget) return Target.transform.position;
+            if (HasTarget && Target != null && !Target.Equals(null))
+                return Target.transform.position;
             return ResolvePatrolDestination();
         }
 
