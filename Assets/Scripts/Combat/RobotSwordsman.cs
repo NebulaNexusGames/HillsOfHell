@@ -42,6 +42,8 @@ namespace CarGame.Combat
         [SerializeField] private float crossFade = 0.12f;
         [Tooltip("Порог скорости, выше которого робот на патруле идёт (Walk), а не стоит (Idle), м/с")]
         [SerializeField] private float walkThreshold = 0.25f;
+        [Tooltip("Скорость, с которой анимация преследования играет ХОДЬБУ (Walk), а не бег. Мечник в бою шагает к цели, а не бежит. 0 — играть Run как раньше")]
+        [SerializeField] private float chaseAnimSpeed = 1f;
 
         [Header("Названия состояний в Animator")]
         [Tooltip("Стоит на месте, цель не видна")]
@@ -206,10 +208,25 @@ namespace CarGame.Combat
             if (!moving)
             {
                 PlayState(idleState);
+                animator.speed = 1f;
                 return;
             }
 
-            PlayState(engaged ? runState : walkState);
+            // Преследование играется ХОДЬБОЙ (Walk), а не бегом: у этой модели
+            // нет нормального Run-цикла — на преследовании ноги «крутят на
+            // месте». Поэтому в бою включаем то же состояние Walk, что и на
+            // патруле, но проигрываем его в chaseAnimSpeed раз быстрее, чтобы
+            // робот выглядел идущим к цели, а не скользящим.
+            if (engaged && chaseAnimSpeed > 0.01f)
+            {
+                PlayState(walkState);
+                animator.speed = Mathf.Max(0.05f, chaseAnimSpeed);
+            }
+            else
+            {
+                PlayState(engaged ? runState : walkState);
+                animator.speed = 1f;
+            }
         }
 
         private void PlayState(string state)

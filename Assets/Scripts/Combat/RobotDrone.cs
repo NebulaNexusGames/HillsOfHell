@@ -50,6 +50,8 @@ namespace CarGame.Combat
         [SerializeField] private float ceilingClearance = 0.45f;
         [Tooltip("Минимальная высота корпуса над землёй. Дрон не должен касаться пола: после спавна он это проверяет и поднимается, а ниже этой отметки не опускается никогда")]
         [SerializeField] private float minGroundHeight = 1.2f;
+        [Tooltip("Штатная высота патрулирования над землёй, м. Выше minGroundHeight: в режиме патруля дрон держится заметно выше роста игрока и крыш машин. 0 — не поднимать принудительно")]
+        [SerializeField] private float patrolAltitude = 6f;
 
         [Header("Стрельба")]
         [Tooltip("Дальность стрельбы, м")]
@@ -310,8 +312,38 @@ namespace CarGame.Combat
                 returningHome = true;
             }
 
+            PatrolAltitudeAssist();
+
             if (returningHome) UpdateReturnHome();
             else UpdatePatrol();
+        }
+
+        /// <summary>
+        /// Штатная высота патрулирования: над точкой спавна. Ниже patrolAltitude
+        /// над землёй/спавном дрон в режиме патруля не опускается — так он
+        /// держится выше крыш машин и игрока, пока никого не видит. В бою
+        /// (hoverHeight над целью) эта подложка не действует.
+        /// </summary>
+        private void PatrolAltitudeAssist()
+        {
+            if (patrolAltitude <= 0.05f) return;
+
+            float groundY = SpawnPoint.y;
+            if (Physics.Raycast(transform.position, Vector3.down, out RaycastHit ground,
+                patrolAltitude + 60f, crashMask, QueryTriggerInteraction.Ignore))
+            {
+                groundY = ground.point.y;
+            }
+
+            float minY = groundY + patrolAltitude;
+            if (transform.position.y >= minY - 0.02f) return;
+
+            Vector3 position = transform.position;
+            position.y = Mathf.MoveTowards(position.y, minY, moveSpeed * Time.deltaTime);
+            transform.position = position;
+
+            if (velocity.y < 0f) velocity.y = 0f;
+            if (body != null && !body.isKinematic) body.linearVelocity = velocity;
         }
 
         /// <summary>

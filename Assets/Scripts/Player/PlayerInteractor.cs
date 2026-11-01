@@ -189,6 +189,14 @@ namespace CarGame.Player
 
         public bool TryGetAimRay(out Ray ray)
         {
+            // Все выстрелы и броски в игре идут СТРОГО из центра экрана.
+            // Если камера прицела почему-то не назначилась (порядок Awake,
+            // сцена без тега MainCamera) — берём Camera.main напрямую, а не
+            // проваливаемся на направление руки/ствола: выстрел обязан лететь
+            // в прицел всегда.
+            if (aimCamera == null) aimCamera = GetComponentInChildren<Camera>();
+            if (aimCamera == null) aimCamera = Camera.main;
+
             if (aimCamera == null)
             {
                 ray = default;

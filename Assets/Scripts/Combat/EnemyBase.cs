@@ -46,6 +46,12 @@ namespace CarGame.Combat
         [SerializeField] private float restDuration = 5f;
         [Tooltip("Шанс, что робот отдыхает полный restDuration, а не короткий patrolWaitTime. 1 — всегда полный отдых")]
         [SerializeField][Range(0f, 1f)] private float restChance = 0.75f;
+        [Tooltip("Сколько шагов пройти на патруле, прежде чем остановиться на паузу и сменить направление (режим блуждания без точек). 0 — считать дистанцию вместо шагов")]
+        [SerializeField] private int patrolStepsBeforeStop = 8;
+        [Tooltip("Длина одного шага для подсчёта, м")]
+        [SerializeField] private float patrolStepLength = 0.7f;
+        [Tooltip("Если patrolStepsBeforeStop = 0: сколько метров пройти, прежде чем остановиться и сменить направление")]
+        [SerializeField] private float patrolDistanceBeforeStop = 6f;
 
         [Header("Обход препятствий")]
         [Tooltip("Насколько далеко робот проверяет путь перед собой, м")]
@@ -95,6 +101,10 @@ namespace CarGame.Combat
         private Vector3 halfExtents = new Vector3(0.35f, 0.9f, 0.35f);
         private float bodyHalfHeight = 1.8f;
         private Rigidbody selfBody;
+        // Счётчик «пройденного на патруле» для остановки через N шагов и смены
+        // направления. Работает в режиме блуждания (без точек патруля).
+        private float patrolWalked;
+        private Vector3 lastPatrolPosition;
         private bool detourActive;
         private float detourTimer;
         private Vector3 detourDirection;
@@ -392,10 +402,33 @@ namespace CarGame.Combat
 
             if (Time.time >= pauseUntil || (wanderTarget - transform.position).sqrMagnitude < 1f)
             {
+                // Счётчик пройденного: сбрасываем при каждой смене точки.
+                patrolWalked = 0f;
+                lastPatrolPosition = transform.position;
+
                 Vector2 offset = Random.insideUnitCircle * patrolRadius;
                 wanderTarget = new Vector3(spawnPoint.x + offset.x, spawnPoint.y, spawnPoint.z + offset.y);
                 float rest = restDuration > 0f ? restDuration : patrolWaitTime;
                 BeginPause(Random.Range(rest, rest * 2f));
+            }
+
+            // Прошёл «N шагов» (или метров) — встаёт на restDuration секунд и
+            // меняет направление: новая точка блуждания выбирается заново.
+            float stepLimit = patrolStepsBeforeStop > 0
+                ? patrolStepsBeforeStop * Mathf.Max(0.1f, patrolStepLength)
+                : Mathf.Max(0.5f, patrolDistanceBeforeStop);
+
+            Vector3 flatDelta = Vector3.ProjectOnPlane(transform.position - lastPatrolPosition, Vector3.up);
+            patrolWalked += flatDelta.magnitude;
+            lastPatrolPosition = transform.position;
+
+            if (patrolWalked >= stepLimit && Time.time >= pauseUntil)
+            {
+                patrolWalked = 0f;
+                Vector2 nextOffset = Random.insideUnitCircle * patrolRadius;
+                wanderTarget = new Vector3(spawnPoint.x + nextOffset.x, spawnPoint.y, spawnPoint.z + nextOffset.y);
+                BeginPause(restDuration > 0f ? restDuration : patrolWaitTime);
+                return transform.position;
             }
 
             return wanderTarget;
