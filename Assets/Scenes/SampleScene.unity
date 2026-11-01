@@ -17,15 +17,17 @@ MonoBehaviour:
   jumpClip: {fileID: 0}
   damageClip: {fileID: 0}
   defaultStepClips:
-  - {fileID: 0}
+  - {fileID: 8300000, guid: f081b9ca5a6efd14dab4a5caa70a1fc8, type: 3}
   surfaces:
   - surface: Concrete
-    clips: []
+    clips:
+    - {fileID: 8300000, guid: f081b9ca5a6efd14dab4a5caa70a1fc8, type: 3}
     volume: 1
     grit: 0.25
     tone: 100
   - surface: Asphalt
-    clips: []
+    clips:
+    - {fileID: 8300000, guid: f081b9ca5a6efd14dab4a5caa70a1fc8, type: 3}
     volume: 1
     grit: 0.5
     tone: 140
