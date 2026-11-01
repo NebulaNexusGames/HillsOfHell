@@ -97,6 +97,7 @@ namespace CarGame.Combat
 
         private Rigidbody body;
         private Transform tiltRig;
+        private Quaternion tiltTarget = Quaternion.identity;
         private float bobPhase;
         private RobotVoice voice;
         private float nextFireTime;
@@ -422,6 +423,11 @@ namespace CarGame.Combat
 
             body.linearVelocity = velocity;
             if (body.isKinematic) transform.position += velocity * Time.deltaTime;
+
+            // Мультикоптер наклоняется туда, куда летит: риг крена догоняет
+            // целевой наклон, посчитанный по текущей скорости.
+            UpdateTiltTarget(new Vector3(velocity.x, 0f, velocity.z));
+            ApplyTilt(Time.deltaTime);
         }
 
         /// <summary>
@@ -708,6 +714,113 @@ namespace CarGame.Combat
             }
 
             crashing = true;
+        }
+
+        /// <summary>
+        /// Готовит объект «риг крена» (tiltRig) — дочерний трансформ, на котором
+        /// крутится визуальный наклон дрона. Физический Rigidbody остаётся на
+        /// корне с FreezeRotation, коллайдеры тоже на корне, поэтому физика не
+        /// плывёт, а модель выглядит как настоящий мультикоптер: корпус
+        /// наклоняется в сторону движения и покачивается на зависании.
+        ///
+        /// Если под геймом уже лежит дочерний визуал (модель из префаба), он
+        /// пересобирается под риг. Если нет — риг создаётся пустым, и дальше
+        /// ApplyTilt работает только с наклоном root-визуала через tiltTarget.
+        /// </summary>
+        private void BuildTiltRig()
+        {
+            // Уже есть — ничего не трогаем (защита от повторного вызова).
+            if (tiltRig != null) return;
+
+            Transform existing = transform.Find("TiltRig");
+            if (existing != null)
+            {
+                tiltRig = existing;
+                return;
+            }
+
+            tiltRig = new GameObject("TiltRig").transform;
+            tiltRig.SetParent(transform, false);
+            tiltRig.localPosition = Vector3.zero;
+            tiltRig.localRotation = Quaternion.identity;
+            tiltRig.localScale = Vector3.one;
+
+            // Переносим весь визуальный дочерний контент под риг. Коллайдеры и
+            // Rigidbody остаются на корне: риг нужен только для вращения модели.
+            for (int i = transform.childCount - 1; i >= 0; i--)
+            {
+                Transform child = transform.GetChild(i);
+                if (child == tiltRig) continue;
+                if (child.GetComponent<Collider>() != null && child.parent == transform)
+                {
+                    // Дочерние коллайдеры (например, hitbox'ы) оставляем на месте,
+                    // чтобы не ломать физический профиль дрона.
+                    continue;
+                }
+
+                bool isVisual = child.GetComponent<Renderer>() != null
+                    || HasRendererInChildren(child)
+                    || child.name.IndexOf("model", System.StringComparison.OrdinalIgnoreCase) >= 0
+                    || child.name.IndexOf("visual", System.StringComparison.OrdinalIgnoreCase) >= 0;
+
+                if (isVisual) child.SetParent(tiltRig, true);
+            }
+        }
+
+        private static bool HasRendererInChildren(Transform root)
+        {
+            for (int i = 0; i < root.childCount; i++)
+            {
+                Transform child = root.GetChild(i);
+                if (child.GetComponent<Renderer>() != null) return true;
+                if (HasRendererInChildren(child)) return true;
+            }
+
+            return false;
+        }
+
+        /// <summary>
+        /// Плавно доводит наклон рига к целевому значению. Вызывается из Update
+        /// после Move(): tiltTarget пересчитывается там же по вектору скорости.
+        /// </summary>
+        private void ApplyTilt(float deltaTime)
+        {
+            if (tiltRig == null) return;
+
+            tiltRig.localRotation = Quaternion.Slerp(
+                tiltRig.localRotation,
+                tiltTarget,
+                Mathf.Clamp01(deltaTime * 6f));
+        }
+
+        /// <summary>
+        /// Считает целевой наклон корпуса: тангаж/рыскание по вектору скорости
+        /// (дрон наклоняется туда, куда летит) плюс лёгкое покачивание при
+        /// зависании. Максимальный крен ограничен, чтобы модель не «лежала».
+        /// </summary>
+        private void UpdateTiltTarget(Vector3 planarVelocity)
+        {
+            float maxTilt = 28f;
+            float speedForTilt = moveSpeed > 0.01f ? moveSpeed : 4f;
+            float t = Mathf.Clamp01(planarVelocity.magnitude / speedForTilt);
+
+            bobPhase += Time.deltaTime * 2.2f;
+            float hoverBob = (planarVelocity.sqrMagnitude < 0.25f)
+                ? Mathf.Sin(bobPhase) * 1.6f
+                : 0f;
+
+            if (planarVelocity.sqrMagnitude < 0.0001f)
+            {
+                tiltTarget = Quaternion.Euler(hoverBob, 0f, 0f);
+                return;
+            }
+
+            Vector3 flat = planarVelocity.normalized;
+            float yaw = Mathf.Atan2(flat.x, flat.z) * Mathf.Rad2Deg;
+            float pitch = -maxTilt * t;
+
+            tiltTarget = Quaternion.Euler(pitch + hoverBob, 0f, 0f)
+                * Quaternion.Inverse(Quaternion.Euler(0f, yaw, 0f));
         }
     }
 }
