@@ -16,6 +16,15 @@ namespace CarGame.Combat
         public float Distance;
         public Health Target;
 
+        /// <summary>
+        /// Нормаль поверхности, в которую попал луч (для декалей). Если цели нет
+        /// и нормаль не получена — вектор вниз как запасной вариант ориентации.
+        /// </summary>
+        public Vector3 Normal;
+
+        /// <summary>Есть ли реальная поверхность для декали: попали во что-то твёрдое.</summary>
+        public bool HasSurface { get { return Distance > 0.01f && Normal.sqrMagnitude > 0.5f; } }
+
         public bool HitSomething { get { return Target != null; } }
     }
 
@@ -79,6 +88,21 @@ namespace CarGame.Combat
 
             Collider nearestCollider = NearestCollider(count, ignore, out float nearest);
 
+            // Нормаль твёрдой поверхности для декали: берём из ближайшего
+            // реального попадания луча.
+            Vector3 surfaceNormal = Vector3.zero;
+            if (nearestCollider != null)
+            {
+                for (int i = 0; i < count; i++)
+                {
+                    if (HitBuffer[i].collider == nearestCollider)
+                    {
+                        surfaceNormal = HitBuffer[i].normal;
+                        break;
+                    }
+                }
+            }
+
             // Дрон — это триггер: так он не толкает игрока и машину, а лучи с
             // QueryTriggerInteraction.Ignore его не видят вообще, поэтому по
             // нему нельзя было выстрелить. Если обычный луч не задел вообще
@@ -103,6 +127,7 @@ namespace CarGame.Combat
                 result.Distance = nearest;
                 result.Point = origin + result.Direction * nearest;
                 result.Target = FindTarget(nearestCollider);
+                result.Normal = surfaceNormal;
             }
 
             if (result.Target == null || assistRadius <= 0.001f) return result;
