@@ -43,15 +43,17 @@ namespace CarGame.Combat
         [Tooltip("Скорость патрулирования, м/с")]
         [SerializeField] private float patrolSpeed = 1.9f;
         [Tooltip("Стоять на месте после достижения точки патруля, с. 0 — не останавливаться")]
-        [SerializeField] private float patrolWaitTime = 1.5f;
+        [SerializeField] private float patrolWaitTime = 1f;
         [Tooltip("Стоять на точке ровно это время, с. 0 — использовать patrolWaitTime")]
-        [SerializeField] private float restDuration = 5f;
+        [SerializeField] private float restDuration = 1f;
         [Tooltip("Сколько шагов пройти на патруле, прежде чем остановиться на паузу и сменить направление (режим блуждания без точек). 0 — считать дистанцию вместо шагов")]
         [SerializeField] private int patrolStepsBeforeStop = 8;
         [Tooltip("Длина одного шага для подсчёта, м")]
         [SerializeField] private float patrolStepLength = 0.7f;
         [Tooltip("Если patrolStepsBeforeStop = 0: сколько метров пройти, прежде чем остановиться и сменить направление")]
         [SerializeField] private float patrolDistanceBeforeStop = 6f;
+        [Tooltip("Сколько секунд робот стоит на патруле, прежде чем сменить маршрут. Короткая плановая стоянка: робот в основном ходит, а не стоит")]
+        [SerializeField] private float patrolStopDuration = 1f;
 
         [Header("Обход препятствий")]
         [Tooltip("Насколько далеко робот проверяет путь перед собой, м")]
@@ -93,6 +95,9 @@ namespace CarGame.Combat
         private Transform currentPatrolPoint;
         private float pauseUntil;
         private float patrolWaitUntil => pauseUntil;
+        // До этого момента робот обязан стоять (замах атаки). Ставится через
+        // LockMovement(), читается в CanMoveNow().
+        private float attackLockUntil;
         private float lastSeenTime = -100f;
         private float repathTime;
         private Vector3 wanderTarget;
@@ -398,11 +403,44 @@ namespace CarGame.Combat
         /// Разрешено ли роботу сейчас двигаться. Возвращает false в паузе на
         /// точке патруля — раньше destination в этот момент указывал на текущую
         /// позицию, но скорость не обнулялась, и робот продолжал «идти» на месте.
+        /// С целью (режим преследования) движение запрещено только во время
+        /// удара (attackLockUntil) — см. CanMoveNow().
         /// </summary>
         protected bool PatrolAllowsMove()
         {
             if (HasTarget) return true;
             return Time.time >= pauseUntil;
+        }
+
+        /// <summary>
+        /// Единая точка истины: можно ли робиту ехать прямо сейчас.
+        /// - Преследование (есть цель): НЕ останавливаться никогда — бежать к
+        ///   цели без пауз; исключение только сам замах атаки (attackLockUntil),
+        ///   иначе робот «ездит» во время удара и атака нечитаема.
+        /// - Патруль: идти всегда, кроме короткой плановой стоянки на маршруте
+        ///   (pauseUntil), которая нужна лишь чтобы сменить точку маршрута.
+        /// Это переопределяет старое поведение PatrolAllowsMove(), которое при
+        /// наличии цели возвращало true даже во время блокировки удара, из-за
+        /// чего мечник продолжал шагать в момент атаки.
+        /// </summary>
+        protected bool CanMoveNow()
+        {
+            if (Time.time < attackLockUntil) return false;
+            if (HasTarget) return true;
+            return Time.time >= pauseUntil;
+        }
+
+        /// <summary>
+        /// Заставляет робота немедленно сменить маршрут: сбрасывает счётчик
+        /// пройденного и текущую точку блуждания, так что в следующем кадре
+        /// ResolvePatrolDestination выберет новую случайную точку рядом со
+        /// спавном и робот сразу продолжит движение к ней.
+        /// </summary>
+        protected void ForceNewPatrolRoute()
+        {
+            patrolWalked = 0f;
+            lastPatrolPosition = transform.position;
+            wanderTarget = Vector3.zero; // выбор новой точки в след. кадре
         }
 
         private Vector3 ResolvePatrolDestination()
@@ -421,10 +459,13 @@ namespace CarGame.Combat
                 Vector3 flat = Vector3.ProjectOnPlane(point.position - transform.position, Vector3.up);
                 if (flat.magnitude <= patrolPointTolerance)
                 {
+                    // Дошёл до точки: короткая плановая стоянка (по умолчанию 1 с),
+                    // затем сразу новая точка маршрута. Долго стоять на патруле
+                    // нельзя — робот должен ходить.
                     if (Time.time >= patrolWaitUntil)
                     {
                         PickNextPatrolPoint();
-                        BeginPause(restDuration);
+                        BeginPatrolStop(patrolStopDuration > 0f ? patrolStopDuration : Mathf.Min(1f, patrolWaitTime));
                     }
 
                     return transform.position;
@@ -433,23 +474,24 @@ namespace CarGame.Combat
                 return point.position;
             }
 
-            // Режим блуждания без точек. Пауза — СТРОГО restDuration секунд
-            // (по умолчанию 5), без случайного удвоения: робот доходит ~N шагов,
-            // встаёт ровно на 5 секунд и только потом выбирает новое направление.
-            float rest = restDuration > 0f ? restDuration : patrolWaitTime;
+            // Режим блуждания без точек. Робот ХОДИТ по маршруту и останавливается
+            // только иногда — чтобы сменить точку маршрута (короткая стоянка
+            // patrolStopDuration, по умолчанию 1 с). Долго «стоять на патруле»
+            // недопустимо: это было причиной залипания меча в Idle.
+            float stop = patrolStopDuration > 0f ? patrolStopDuration : Mathf.Min(1f, patrolWaitTime);
 
-            if (Time.time >= pauseUntil || (wanderTarget - transform.position).sqrMagnitude < 1f)
+            if ((wanderTarget - transform.position).sqrMagnitude < 1f)
             {
-                // Счётчик пройденного: сбрасываем при каждой смене точки.
+                // Первая точка после спавна / принудительная смена маршрута:
+                // выбираем новую цель блуждания и сразу идём к ней (без паузы).
                 patrolWalked = 0f;
                 lastPatrolPosition = transform.position;
 
                 Vector2 offset = Random.insideUnitCircle * patrolRadius;
                 wanderTarget = new Vector3(spawnPoint.x + offset.x, spawnPoint.y, spawnPoint.z + offset.y);
-                BeginPause(rest);
             }
 
-            // Прошёл «N шагов» (или метров) — встаёт на restDuration секунд и
+            // Прошёл «N шагов» (или метров) — встаёт на короткую стоянку и
             // меняет направление: новая точка блуждания выбирается заново.
             float stepLimit = patrolStepsBeforeStop > 0
                 ? patrolStepsBeforeStop * Mathf.Max(0.1f, patrolStepLength)
@@ -464,7 +506,7 @@ namespace CarGame.Combat
                 patrolWalked = 0f;
                 Vector2 nextOffset = Random.insideUnitCircle * patrolRadius;
                 wanderTarget = new Vector3(spawnPoint.x + nextOffset.x, spawnPoint.y, spawnPoint.z + nextOffset.y);
-                BeginPause(rest);
+                BeginPatrolStop(stop);
                 return transform.position;
             }
 
@@ -476,6 +518,26 @@ namespace CarGame.Combat
             // Длительность паузы берётся ровно из параметра: отдых на точке
             // патруля длится restDuration секунд, а не «сколько повезёт».
             pauseUntil = Time.time + Mathf.Max(0.1f, duration > 0f ? duration : patrolWaitTime);
+        }
+
+        /// <summary>
+        /// Короткая плановая стоянка на маршруте (по умолчанию ~1 с): робот
+        /// останавливается, чтобы затем сменить точку маршрута. Использует тот
+        /// же механизм pauseUntil, что и обычный отдых патруля, но значительно
+        /// короче restDuration — патруль должен ХОДИТЬ, а стоять лишь иногда.
+        /// </summary>
+        protected void BeginPatrolStop(float duration)
+        {
+            pauseUntil = Time.time + Mathf.Max(0.1f, duration);
+        }
+
+        /// <summary>
+        /// Заблокировать движение робота на duration секунд (замах атаки).
+        /// В это время CanMoveNow() == false даже при активной цели.
+        /// </summary>
+        protected void LockMovement(float duration)
+        {
+            attackLockUntil = Time.time + Mathf.Max(0f, duration);
         }
 
         private void PickNextPatrolPoint()

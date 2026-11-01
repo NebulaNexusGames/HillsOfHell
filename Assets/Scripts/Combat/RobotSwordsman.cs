@@ -71,9 +71,10 @@ namespace CarGame.Combat
         private string currentState;
         private float attackLockTime;
         private float attackStopTimer;
-        // Анти-залипание преследования: если робот не приближается к цели
-        // (упёрся в невидимый коллайдер/стену), после chaseGiveUpTime секунд
-        // без прогресса цель сбрасывается и возвращается патруль.
+        // Диагностика преследования: робот больше НЕ сдаётся и не сбрасывает
+        // цель при отсутствии прогресса (по ТЗ погоня бессрочная). Поля оставлены
+        // для наблюдения за дистанцией/прогрессом; chaseGiveUpTime больше не
+        // используется для отмены преследования.
         [SerializeField] private float chaseGiveUpTime = 3f;
         private float prevChaseDistance = -1f;
         private float chaseNoProgressTimer;
@@ -138,22 +139,18 @@ namespace CarGame.Combat
 
             bool engaged = HasTarget;
 
-            // Дистанция преследования: если робот упёрся в невидимый коллайдер
-            // (стекло, триггер-блокер) и физически не может подойти ближе —
-            // цель всё равно «не видна для атаки». Чтобы не залипать в беге на
-            // месте, при отсутствии прогресса цель сбрасывается и робот
-            // возвращается в патруль.
+            // Анти-залипание преследования: если робот НЕ приближается к цели
+            // (упёрся в невидимый коллайдер/стену) — цель НЕ сбрасывается.
+            // По требованию геймплея мечник преследует игрока без остановок и
+            // без «сдачи»: вместо прежнего BeginPause(0.8f) и возврата в
+            // патруль робот просто продолжает бежать, а обход препятствий
+            // (ComputeAvoidance/detour в EnemyBase) выводит его из тупика.
+            // Таймеры прогресса оставлены только для диагностики поведения.
             if (engaged && distance > attackRange * 1.2f)
             {
                 float progress = (prevChaseDistance < 0f ? 0f : prevChaseDistance - distance);
                 chaseProgress += progress;
                 chaseNoProgressTimer += Time.deltaTime;
-                if (chaseNoProgressTimer > chaseGiveUpTime && chaseProgress < 0.35f)
-                {
-                    Target = null;
-                    BeginPause(0.8f);
-                    engaged = false;
-                }
             }
             else
             {
@@ -164,7 +161,12 @@ namespace CarGame.Combat
 
             bool striking = attackStopTimer > 0f;
 
-            Vector3 direction = striking ? Vector3.zero : ComputeAvoidance(flatDelta);
+            // Направление задаём ВСЕГДА, когда можно идти — в том числе во время
+            // застоя (striking): раньше при striking direction был нулём, робот
+            // останавливался посреди преследования и аниматор уходил из Run.
+            // Остановка движения теперь управляется только PatrolAllowsMove()
+            // (пауза маршрута) и strike-блокировкой скорости ниже.
+            Vector3 direction = ComputeAvoidance(flatDelta);
 
             UpdateStuckCheck(
                 body != null ? body.linearVelocity : Vector3.zero,
@@ -175,6 +177,8 @@ namespace CarGame.Combat
             // Пауза на точке патруля: робот обязан встать, а не «идти» на месте.
             // Вне паузы мечник реально шагает к точке маршрута (анимация Walk),
             // дошёл «N шагов» — встаёт на restDuration секунд (анимация Idle).
+            // Преследование: скорость НЕ обнуляется никогда, кроме времени самого
+            // удара (striking) — бить нужно стоя, но это не «остановка погони».
             bool mayMove = PatrolAllowsMove();
             float speed = !mayMove || striking ? 0f : engaged ? moveSpeed : PatrolSpeed;
             Move(mayMove ? direction : Vector3.zero, speed);
@@ -224,25 +228,39 @@ namespace CarGame.Combat
             if (attackLockTime > 0f)
             {
                 attackLockTime -= Time.deltaTime;
-                return;
+
+                // Анимация атаки доиграна, но цель всё ещё активна: НЕ даём
+                // аниматору остаться в Idle (контроллер сам уходит Attack→Idle).
+                // Сбрасываем currentState и пропускаем кадр через обычный выбор
+                // состояния — ниже будет выбран Run, робот продолжит
+                // преследование без «залипания» стойки после удара.
+                if (attackLockTime <= 0f && engaged)
+                {
+                    currentState = null;
+                }
+                else
+                {
+                    return;
+                }
             }
 
             animator.speed = 1f;
 
-            // Механика мечника: два состояния ИИ.
-            // Idle-состояние: патрулирование — идёт анимацией Walk, после
-            // рандомного числа шагов встаёт (пауза маршрута) — анимация Idle.
-            // Атака: увидел цель — бежит к ней (Run), догнал — останавливается
-            // и бьёт (Attack). Выбор состояния идёт ПОЛНОСТЬЮ по логике ИИ, а
-            // НЕ по замеренной скорости: раньше скорость на переходе Idle⇄Walk
-            // проседала ниже порога и аниматор каждую секунду переклинивало
-            // между состояниями.
+            // Механика мечника: три состояния ИИ.
+            // Патруль: робот ХОДИТ (анимация Walk); остановка допускается только
+            // короткая и только на маршруте — чтобы затем сменить направление
+            // (анимация Idle на время стоянки). Простоять весь патруль в Idle
+            // нельзя: PatrolAllowsMove() вне плановой стоянки всегда true.
+            // Атака: увидел цель — бежит к ней (Run) БЕЗ остановок, догнал — бьёт
+            // (Attack). После доигрывания атаки аниматор сам уходит в Idle, а код
+            // на следующем кадре переключает состояние по актуальной логике ИИ:
+            // цель есть — Run, цели нет — Walk/Idle по патрулю.
             string desired;
             if (engaged)
             {
                 // Увидел цель → бег к ней (анимация Run). Если бежать некуда
                 // (цель в пределах удара и робот стоит) — остаёмся в Run-стойке,
-                // атаку инициирует блок Strike выше.
+                // атаку инициирует блок Strike выше. В Idle при цели НЕ уходим.
                 desired = runState;
             }
             else if (PatrolAllowsMove())
@@ -252,7 +270,8 @@ namespace CarGame.Combat
             }
             else
             {
-                // Пауза на restDuration секунд / простоял после потери цели — Idle.
+                // Короткая плановая стоянка на маршруте / простоял после потери
+                // цели — Idle. Длительность стоянки ограничена patrolStopDuration.
                 desired = idleState;
             }
 
