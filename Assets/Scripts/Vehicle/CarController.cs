@@ -155,6 +155,15 @@ namespace CarGame.Vehicle
         public PlayerController Driver => driver;
         public Health Health => health;
         public CargoZone Cargo => cargo;
+
+        /// <summary>
+        /// Коллайдеры корпуса машины (только не-триггеры). Нужны ботам: машина
+        /// с водителем — «приоритетная цель», и расстояние до неё считается по
+        /// поверхности корпуса, а не по центру. Иначе робот упирался в капот,
+        /// формально был далеко от центра Health и «бил воздух» без урона.
+        /// </summary>
+        public Collider[] BodyColliders => bodyCollidersCache ?? (bodyCollidersCache = FindBodyColliders());
+
         public bool IsOccupied => driver != null;
         public bool IsSeated => seated;
         public bool IsTransitioning => transitioning;
@@ -334,6 +343,7 @@ namespace CarGame.Vehicle
             health = GetComponent<Health>();
             if (health == null) health = gameObject.AddComponent<Health>();
             if (maxHealth > 0.5f) health.Configure(maxHealth, Health.HpOwner.Car);
+
 
             // Зона багажника берётся только из поля. Автопоиск тут был бесполезен и вредил: зона лежит на отдельном объекте Cargo, поэтому ни
             // GetComponentInChildren, ни GetComponentInParent её не находили, а вложенная или родительская зона подхватывалась вместо нужной.

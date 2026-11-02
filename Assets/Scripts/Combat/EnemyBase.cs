@@ -180,6 +180,60 @@ namespace CarGame.Combat
         public Health Target { get; protected set; }
         public bool HasTarget => Target != null && !Target.IsDead;
 
+        /// <summary>
+        /// Маркер «Приоритетная цель»: машина, в которой сидит игрок. Игрок за
+        /// рулём неуязвим и для ботов НЕВИДИМ — атаковать нужно именно машину.
+        /// </summary>
+        public bool IsPriorityCarTarget => Target != null && Target.IsCar && IsTargetOccupied(Target);
+
+        /// <summary>
+        /// Занята ли машина-цель игроком. Определяется по CarController.Driver:
+        /// именно его PlayerController ставит себе Invulnerable при посадке
+        /// (EnterVehicle) и снимает при выходе (ExitVehicle).
+        /// </summary>
+        protected static bool IsTargetOccupied(Health candidate)
+        {
+            if (candidate == null || candidate.Equals(null) || !candidate.IsCar) return false;
+
+            CarController car = candidate.GetComponent<CarController>();
+            if (car == null) car = candidate.GetComponentInParent<CarController>();
+            if (car == null) return false;
+
+            return car.IsOccupied;
+        }
+
+        /// <summary>
+        /// Расстояние от точки робота до поверхности цели. Для машины считается
+        /// по ближайшей точке коллайдеров корпуса (CarController.BodyColliders),
+        /// а не до центра Health на корне: иначе робот, упоровшись в капот,
+        /// формально стоял в 3+ метрах и никогда не мог нанести удар.
+        /// </summary>
+        protected float SurfaceDistanceTo(Vector3 from, Health candidate)
+        {
+            if (candidate == null || candidate.Equals(null)) return float.MaxValue;
+
+            if (!candidate.IsCar)
+                return Vector3.Distance(from, candidate.transform.position);
+
+            CarController car = candidate.GetComponent<CarController>();
+            if (car == null) car = candidate.GetComponentInParent<CarController>();
+
+            Collider[] colliders = car != null ? car.BodyColliders : null;
+            if (colliders == null || colliders.Length == 0)
+                return Vector3.Distance(from, candidate.transform.position);
+
+            float best = float.MaxValue;
+            for (int i = 0; i < colliders.Length; i++)
+            {
+                Collider col = colliders[i];
+                if (col == null || col.Equals(null) || !col.enabled) continue;
+                float d = Vector3.Distance(from, col.ClosestPoint(from));
+                if (d < best) best = d;
+            }
+
+            return best < float.MaxValue ? best : Vector3.Distance(from, candidate.transform.position);
+        }
+
         /// <summary>Последняя виденная позиция цели (для преследования «по памяти»).
         /// Актуальна, пока цель не сброшена после истечения памяти.</summary>
         protected Vector3 LastKnownTargetPosition => lastKnownTargetPosition;
