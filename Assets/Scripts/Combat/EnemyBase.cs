@@ -24,6 +24,8 @@ namespace CarGame.Combat
         [SerializeField] private float sightAngleDegrees = 120f;
         [Tooltip("Радиус зоны вокруг робота, внутри которой цель замечается с любой стороны (даже за спиной). 0 — отключено")]
         [SerializeField] private float nearDetectionRadius = 8f;
+        [Tooltip("Невидимая зона вокруг ЦЕЛИ (игрока или машины), радиус в метрах. Пока что-то преследуемое находится внутри неё, робот гарантированно видит цель: игнорируются конус обзора, преграды на линии взгляда и проверки достижимости по высоте. Это лечит «тупое» невидение игрока вплотную за углами/стенами. 0 — отключено")]
+        [SerializeField] private float targetAwarenessRadius = 12f;
         [Tooltip("Проверять, дотягивается ли робот до цели по высоте и расстоянию. Выключи — будет преследовать любую цель в зоне видимости")]
         [SerializeField] private bool requireReachableTarget = true;
         [Tooltip("Высота цели над её точкой отсчёта, м. Обычно центр груди или капота")]
@@ -154,7 +156,14 @@ namespace CarGame.Combat
         private static readonly RaycastHit[] sightBuffer = new RaycastHit[16];
 
         public Health Health => health;
-        public float DetectRange => Mathf.Clamp(detectRange, 0.5f, Mathf.Max(0.5f, maxDetectRange)) * BloodMoonVisionMultiplier;
+        // Дальность захвата цели: базовая DetectRange, но никогда меньше
+        // невидимой зоны вокруг самой цели (targetAwarenessRadius). Иначе
+        // получалось противоречие: «зонаawareness» есть 12 м, а detectRange
+        // 8 м — и робот реально не видел игрока в упор за стеной, хотя по ТЗ
+        // внутри зоны обязан преследовать гарантированно.
+        public float DetectRange => Mathf.Max(
+            Mathf.Clamp(detectRange, 0.5f, Mathf.Max(0.5f, maxDetectRange)),
+            Mathf.Max(0f, targetAwarenessRadius)) * BloodMoonVisionMultiplier;
         public Vector3 FrontPosition => transform.position + FrontOffset;
         public Vector3 FrontForward => transform.forward;
         protected Vector3 FrontOffset { get; private set; }
@@ -363,7 +372,8 @@ namespace CarGame.Combat
                     BeginPause(0.8f);
                     return;
                 }
-                else if (!IsTargetReachable(Target) && DropTargetWhenUnreachable)
+                else if (!IsTargetReachable(Target) && DropTargetWhenUnreachable
+                         && !IsTargetAwarenessZone(Target))
                 {
                     // Цель стала геометрически недосягаемой (например игрок на
                     // крыше) — забываем сразу. Мечник этот сброс отключил: упор
@@ -404,9 +414,45 @@ namespace CarGame.Combat
         }
 
         /// <summary>
-        /// Проверяет кандидата на роль цели (игрок или машина) и, если он
-        /// проходит все проверки и ближе текущего лучшего, делает его целью.
+        /// Невидимая зона вокруг цели (игрока или машины). Пока робот находится
+        /// внутри неё, цель считается видимой ГАРАНТИРОВАННО: конус обзора,
+        /// преграды на линии взгляда и проверки достижимости по высоте
+        /// игнорируются. Это лечит «тупое» невидение: бот больше не теряет
+        /// игрока из-за угла, стены или бордюра вплотную к себе. Как только
+        /// робот выходит за радиус зоны — включаются обычные строгие проверки.
         /// </summary>
+        protected bool IsTargetAwarenessZone(Health candidate)
+        {
+            if (candidate == null || candidate.Equals(null)) return false;
+            if (targetAwarenessRadius <= 0f) return false;
+
+            float radiusSq = targetAwarenessRadius * targetAwarenessRadius;
+
+            Vector3 toCandidate = candidate.transform.position - transform.position;
+            if (toCandidate.sqrMagnitude <= radiusSq) return true;
+
+            // У машины точка отсчёта — центр, а габариты большие: робот может
+            // стоять вплотную к капоту, но формально быть в 6+ метрах от центра.
+            // Поэтому для целей-машин дополнительно проверяем расстояние до
+            // ближайшей точки их коллайдеров — зона «прилегает» к корпусу.
+            if (candidate.IsCar)
+            {
+                Collider[] carColliders = candidate.GetComponentsInChildren<Collider>();
+                for (int i = 0; i < carColliders.Length; i++)
+                {
+                    Collider col = carColliders[i];
+                    if (col == null || col.Equals(null)) continue;
+                    if (!col.enabled) continue;
+
+                    Vector3 closest = col.ClosestPoint(transform.position);
+                    Vector3 delta = closest - transform.position;
+                    if (delta.sqrMagnitude <= radiusSq) return true;
+                }
+            }
+
+            return false;
+        }
+
         private void TryConsiderTarget(Health candidate, ref Health best, ref float bestDistance)
         {
             if (candidate == null || candidate.Equals(null) || candidate.IsDead) return;
@@ -414,6 +460,16 @@ namespace CarGame.Combat
             Vector3 toTarget = candidate.transform.position - transform.position;
             if (toTarget.magnitude > DetectRange) return;
             if (toTarget.magnitude >= bestDistance) return;
+
+            // Внутри невидимой зоны цели робот обязан её преследовать —
+            // без проверок сектора обзора, линии взгляда и досягаемости.
+            if (IsTargetAwarenessZone(candidate))
+            {
+                best = candidate;
+                bestDistance = toTarget.magnitude;
+                return;
+            }
+
             if (!IsTargetReachable(candidate)) return;
 
             // Захват цели — только если она в секторе обзора перед роботом.
@@ -428,6 +484,7 @@ namespace CarGame.Combat
         protected virtual bool IsTargetReachable(Health candidate)
         {
             if (!requireReachableTarget || candidate == null) return true;
+            if (IsTargetAwarenessZone(candidate)) return true;
 
             Vector3 targetCenter = candidate.transform.position + Vector3.up * targetHeightOffset;
             Vector3 selfCenter = transform.position + Vector3.up * targetHeightOffset;
@@ -456,6 +513,11 @@ namespace CarGame.Combat
         protected bool IsTargetVisible(Health candidate)
         {
             if (candidate == null || candidate.IsDead) return false;
+
+            // Невидимая зона вокруг цели: пока робот в ней — цель «видна»
+            // всегда, даже за стеной/углом. Иначе боты в упор тупо теряли
+            // игрока из-за преграды на линии взгляда.
+            if (IsTargetAwarenessZone(candidate)) return true;
 
             Vector3 flat = Vector3.ProjectOnPlane(candidate.transform.position - transform.position, Vector3.up);
             if (flat.magnitude > DetectRange) return false;
@@ -501,6 +563,11 @@ namespace CarGame.Combat
         protected bool HasLineOfSight(Health target)
         {
             if (target == null) return false;
+
+            // Невидимая зона вокруг цели: вплотную к цели преграды не считаются
+            // — робот обязан «чувствовать» цель и атаковать, даже упираясь в её
+            // корпус/стenu в упор. Иначе боты тупо не видели игрока вблизи.
+            if (IsTargetAwarenessZone(target)) return true;
 
             Vector3 origin = FrontPosition + Vector3.up * 1.2f;
             Vector3 destination = target.transform.position + Vector3.up * 0.9f;
