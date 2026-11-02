@@ -162,8 +162,6 @@ namespace CarGame.Vehicle
         /// поверхности корпуса, а не по центру. Иначе робот упирался в капот,
         /// формально был далеко от центра Health и «бил воздух» без урона.
         /// </summary>
-        public Collider[] BodyColliders => bodyCollidersCache ?? (bodyCollidersCache = FindBodyColliders());
-
         public bool IsOccupied => driver != null;
         public bool IsSeated => seated;
         public bool IsTransitioning => transitioning;
