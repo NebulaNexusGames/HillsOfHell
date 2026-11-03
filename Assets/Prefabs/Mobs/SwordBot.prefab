@@ -1175,25 +1175,19 @@ MonoBehaviour:
   stuckSpeed: 0.4
   stuckDelay: 0.7
   detourDuration: 1.3
-  maxHealth: 60
-  moveSpeed: 3.6
-  turnSpeed: 420
-  attackRange: 2.1
-  attackDamage: 11
   carDamageMultiplier: 1.4
   attackCooldown: 1.1
   attackStopDuration: 2
-  shakeSound: {fileID: 0}
   dieParameter: Die
   deathExplodeDelay: 1.5
   explosionPrefab: {fileID: 5316626115453355477, guid: 77450e5255e83d549b294f418ebf06f6, type: 3}
   deathSound: {fileID: 0}
+  shakeSound: {fileID: 0}
   playDeathSound: 1
   deathSoundVolume: 1
   animator: {fileID: 576777897269433724}
   animateStrike: 1
   crossFade: 0.12
-  walkThreshold: 0.25
   idleState: Idle
   walkState: Walk
   runState: Run
@@ -1208,12 +1202,13 @@ MonoBehaviour:
     countMin: 1
     countMax: 3
   scatterRadius: 0.5
-  chaseGiveUpTime: 3
   stepSound: {fileID: 8300000, guid: f16105201404fd942b37c0670ea71f09, type: 3}
   alertSound: {fileID: 8300000, guid: a643cd8d6f0423b43bf5c160f262abf0, type: 3}
   stepVolume: 0.35
   alertVolume: 0.8
   targetMemoryDuration: 10
+  walkThreshold: 0.25
+  chaseGiveUpTime: 3
 --- !u!1 &4405899903749958003
 GameObject:
   m_ObjectHideFlags: 0

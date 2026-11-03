@@ -119,6 +119,18 @@ namespace CarGame.Combat
                  "продолжает преследовать последнюю известную позицию. По ТЗ — 10 секунд.")]
         [SerializeField] private float targetMemoryDuration = 10f;
 
+        // Поля сохранены для совместимости с уже сериализованными значениями
+        // в префабе SwordBot (walkThreshold: 0.25, chaseGiveUpTime: 3).
+        // Удаление этих полей Unity воспринимает как повреждение данных
+        // компонента — отсюда сообщение о «merge conflict» в префабе.
+        [Tooltip("Скорость ниже которой робот считается стоящим на месте " +
+                 "(служебный порог, движение сейчас управляется стойкой после удара)")]
+        [SerializeField] private float walkThreshold = 0.25f;
+        [Tooltip("Сколько секунд без видимой цели мечник ещё считает цель " +
+                 "потерянной (старое поле; фактически переопределено " +
+                 "targetMemoryDuration через LoseTargetMemoryOverride)")]
+        [SerializeField] private float chaseGiveUpTime = 3f;
+
         private Rigidbody body;
         private string currentStateName;
         // Таймер пост-ударной стойки (Idle). Ставится в момент удара равным
@@ -291,7 +303,7 @@ namespace CarGame.Combat
                 string desired;
                 if (holdingAfterStrike) desired = idleState;          // шаг 2 атаки: стойка Idle
                 else if (engaged) desired = runState;                  // преследование: Run
-                else if (Time.time >= patrolWaitUntil) desired = walkState; // патруль: шаг 1 — Walk
+                else if (PatrolAllowsMove()) desired = walkState; // патруль: шаг 1 — Walk
                 else desired = idleState;                              // патруль: шаг 2 — передышка Idle
                 ApplyState(desired);
             }
