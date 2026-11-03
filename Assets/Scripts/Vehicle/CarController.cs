@@ -153,16 +153,28 @@ namespace CarGame.Vehicle
         public bool HeadlightsOn => headlightsOn;
 
         public PlayerController Driver => driver;
-        public Health Health => health;
+        /// <summary>
+        /// ХП кузова. Если на объекте машины компонент Health ещё не создан
+        /// (Awake не отработал) — создаём его принудительно. Раньше здесь
+        /// возвращался null, и боты (мечник) при ударе молча «били воздух»:
+        /// Strike брал пустую ссылку Health — TakeDamage не вызывался никогда.
+        /// </summary>
+        public Health Health
+        {
+            get
+            {
+                if (health == null || health.Equals(null))
+                {
+                    health = GetComponent<Health>();
+                    if (health == null) health = gameObject.AddComponent<Health>();
+                    if (maxHealth > 0.5f) health.Configure(maxHealth, Health.HpOwner.Car);
+                }
+                return health;
+            }
+        }
         public CargoZone Cargo => cargo;
 
-        /// <summary>
-        /// Коллайдеры корпуса машины (только не-триггеры). Нужны ботам: машина
-        /// с водителем — «приоритетная цель», и расстояние до неё считается по
-        /// поверхности корпуса, а не по центру. Иначе робот упирался в капот,
-        /// формально был далеко от центра Health и «бил воздух» без урона.
-        /// </summary>
-        public bool IsOccupied => driver != null;
+        public bool IsOccupied => driver != null && !driver.Equals(null);
         public bool IsSeated => seated;
         public bool IsTransitioning => transitioning;
         public float SteerInput => steer;
@@ -172,12 +184,44 @@ namespace CarGame.Vehicle
         public bool IsAirborne => wheels != null && wheels.Length > 0 && groundedWheels == 0;
         public Vector3 BalanceReference => balanceReference;
         public float TiltAngle => Vector3.Angle(transform.up, balanceReference);
+        /// <summary>
+        /// Коллайдеры корпуса машины (только не-триггеры). Нужны ботам: машина
+        /// с водителем — «приоритетная цель», и расстояние до неё считается по
+        /// поверхности корпуса, а не по центру. Иначе робот упирался в капот,
+        /// формально был далеко от центра Health и «бил воздух» без урона.
+        /// </summary>
         public Collider[] BodyColliders
         {
             get
             {
-                if (bodyColliders != null && bodyColliders.Length > 0) return bodyColliders;
-                return bodyCollidersCache ?? (bodyCollidersCache = FindBodyColliders());
+                // ВАЖНО: назначенный в инспекторе массив может содержать ссылки на
+                // объекты, которые позже были уничтожены (например, Health игрока
+                // со старым owner=Car). Такие «мёртвые» ссылки не равны null —
+                // они == null только через перегрузку UnityEngine.Object. Прежний
+                // код возвращал этот массив как есть, боты получали пустой набор
+                // живых коллайдеров и никогда не наносили машине урон. Поэтому
+                // сначала чистим массив от мёртвых/триггерных записей.
+                if (bodyColliders != null && bodyColliders.Length > 0)
+                {
+                    int alive = 0;
+                    for (int i = 0; i < bodyColliders.Length; i++)
+                    {
+                        Collider collider = bodyColliders[i];
+                        if (collider == null || collider.Equals(null) || collider.isTrigger) continue;
+                        bodyColliders[alive++] = collider;
+                    }
+
+                    if (alive > 0)
+                    {
+                        if (alive != bodyColliders.Length)
+                            System.Array.Resize(ref bodyColliders, alive);
+                        return bodyColliders;
+                    }
+                }
+
+                if (bodyCollidersCache == null || bodyCollidersCache.Length == 0)
+                    bodyCollidersCache = FindBodyColliders();
+                return bodyCollidersCache;
             }
         }
         public float SpeedMs => body != null ? Vector3.Dot(FrontDirection, body.linearVelocity) : 0f;
