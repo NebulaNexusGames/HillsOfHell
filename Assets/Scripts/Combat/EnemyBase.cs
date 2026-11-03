@@ -117,11 +117,13 @@ namespace CarGame.Combat
         }
 
         private Transform currentPatrolPoint;
-        private float pauseUntil;
         private float patrolWaitUntil => pauseUntil;
         // До этого момента робот обязан стоять (замах атаки). Ставится через
         // LockMovement(), читается в CanMoveNow().
-        private float attackLockUntil;
+        protected float attackLockUntil;
+        // Плановая стоянка на маршруте / пауза. Читается в PatrolAllowsMove()
+        // и CanMoveNow().
+        protected float pauseUntil;
         private float lastSeenTime = -100f;
         // Последняя позиция цели, зафиксированная в момент захвата/видимости.
         // Используется при «памяти цели»: потеряв игрока из виду (за стеной),
