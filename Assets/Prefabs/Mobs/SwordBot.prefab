@@ -1027,6 +1027,7 @@ GameObject:
   - component: {fileID: 2444545356843522034}
   - component: {fileID: 4239960203685974670}
   - component: {fileID: 1008166848422248098}
+  - component: {fileID: 1769924924330881637}
   m_Layer: 0
   m_Name: SwordBot
   m_TagString: Untagged
@@ -1141,6 +1142,7 @@ MonoBehaviour:
   rememberTargetWhenLost: 1
   sightAngleDegrees: 120
   nearDetectionRadius: 8
+  targetAwarenessRadius: 12
   requireReachableTarget: 1
   targetHeightOffset: 1
   maxTargetHeight: 6
@@ -1180,12 +1182,16 @@ MonoBehaviour:
   turnSpeed: 420
   attackRange: 2.1
   attackDamage: 11
-  carDamageMultiplier: 1.4
   attackCooldown: 1.1
-  attackStopDuration: 2
   targetStillSpeed: 0.35
   targetMovingSpeed: 0.6
-  deathSound: {fileID: 0}
+  carDamageMultiplier: 1.4
+  attackStopDuration: 2
+  dieParameter: Die
+  deathExplodeDelay: 0.1
+  explosionPrefab: {fileID: 5316626115453355477, guid: 77450e5255e83d549b294f418ebf06f6, type: 3}
+  deathSound: {fileID: 8300000, guid: 5f271bba2e2d94745a36798d4c8532e0, type: 3}
+  shakeSound: {fileID: 8300000, guid: 878fc179faa977345894493f62abdef3, type: 3}
   playDeathSound: 1
   deathSoundVolume: 1
   animator: {fileID: 576777897269433724}
@@ -1212,6 +1218,103 @@ MonoBehaviour:
   stepVolume: 0.35
   alertVolume: 0.8
   targetMemoryDuration: 10
+--- !u!82 &1769924924330881637
+AudioSource:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 4245188187923376867}
+  m_Enabled: 1
+  serializedVersion: 4
+  OutputAudioMixerGroup: {fileID: 0}
+  m_audioClip: {fileID: 0}
+  m_Resource: {fileID: 0}
+  m_PlayOnAwake: 1
+  m_Volume: 1
+  m_Pitch: 1
+  Loop: 0
+  Mute: 0
+  Spatialize: 0
+  SpatializePostEffects: 0
+  Priority: 128
+  DopplerLevel: 1
+  MinDistance: 1
+  MaxDistance: 500
+  Pan2D: 0
+  rolloffMode: 0
+  BypassEffects: 0
+  BypassListenerEffects: 0
+  BypassReverbZones: 0
+  rolloffCustomCurve:
+    serializedVersion: 2
+    m_Curve:
+    - serializedVersion: 3
+      time: 0
+      value: 1
+      inSlope: 0
+      outSlope: 0
+      tangentMode: 0
+      weightedMode: 0
+      inWeight: 0.33333334
+      outWeight: 0.33333334
+    - serializedVersion: 3
+      time: 1
+      value: 0
+      inSlope: 0
+      outSlope: 0
+      tangentMode: 0
+      weightedMode: 0
+      inWeight: 0.33333334
+      outWeight: 0.33333334
+    m_PreInfinity: 2
+    m_PostInfinity: 2
+    m_RotationOrder: 4
+  panLevelCustomCurve:
+    serializedVersion: 2
+    m_Curve:
+    - serializedVersion: 3
+      time: 0
+      value: 0
+      inSlope: 0
+      outSlope: 0
+      tangentMode: 0
+      weightedMode: 0
+      inWeight: 0.33333334
+      outWeight: 0.33333334
+    m_PreInfinity: 2
+    m_PostInfinity: 2
+    m_RotationOrder: 4
+  spreadCustomCurve:
+    serializedVersion: 2
+    m_Curve:
+    - serializedVersion: 3
+      time: 0
+      value: 0
+      inSlope: 0
+      outSlope: 0
+      tangentMode: 0
+      weightedMode: 0
+      inWeight: 0.33333334
+      outWeight: 0.33333334
+    m_PreInfinity: 2
+    m_PostInfinity: 2
+    m_RotationOrder: 4
+  reverbZoneMixCustomCurve:
+    serializedVersion: 2
+    m_Curve:
+    - serializedVersion: 3
+      time: 0
+      value: 1
+      inSlope: 0
+      outSlope: 0
+      tangentMode: 0
+      weightedMode: 0
+      inWeight: 0.33333334
+      outWeight: 0.33333334
+    m_PreInfinity: 2
+    m_PostInfinity: 2
+    m_RotationOrder: 4
 --- !u!1 &4405899903749958003
 GameObject:
   m_ObjectHideFlags: 0
