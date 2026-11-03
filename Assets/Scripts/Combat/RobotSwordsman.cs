@@ -25,6 +25,8 @@ namespace CarGame.Combat
         [SerializeField] private float carDamageMultiplier = 1.4f;
         [Tooltip("Пауза между ударами, с")]
         [SerializeField] private float attackCooldown = 1.1f;
+        [Tooltip("Сколько секунд робот стоит неподвижно после каждого удара (по ТЗ — 2 с).")]
+        [SerializeField] private float attackStopDuration = 2f;
 
         [Header("Смерть")]
         [Tooltip("Звук гибели. Если пусто, будет использован встроенный процедурный звук")]
@@ -71,10 +73,9 @@ namespace CarGame.Combat
         private bool hadTarget;
         private string currentState;
         private float attackLockTime;
-        // Хвост анимации атаки: сколько секунд после удара ещё считать робота
-        // «бьющим» (запрет движения). Считается от реальной длины клипа Attack,
-        // а не от cooldown — раньше из-за этого робот залипал в стойке удара.
-        private float attackAnimTail;
+        // Заминка после удара (по ТЗ — 2 секунды): робот не двигается, пока
+        // таймер активен. Тикает в Update, ставится в момент удара.
+        private float attackStopTimer;
         private float attackEnteredTime;
         // Диагностика преследования: робот больше НЕ сдаётся и не сбрасывает
         // цель при отсутствии прогресса (по ТЗ погоня бессрочная). Поля оставлены
@@ -164,7 +165,7 @@ namespace CarGame.Combat
             // Хвост анимации удара тикает отдельно от cooldown: робот стоит
             // ровно столько, сколько длится клип Attack (~0.42 с), а не весь
             // интервал между ударами — иначе он «залипал» в стойке атаки.
-            if (attackAnimTail > 0f) attackAnimTail -= Time.deltaTime;
+            if (attackStopTimer > 0f) attackStopTimer -= Time.deltaTime;
 
             Vector3 destination = ResolveDestination();
             Vector3 flatDelta = Vector3.ProjectOnPlane(destination - FrontPosition, Vector3.up);
@@ -208,7 +209,7 @@ namespace CarGame.Combat
             }
             prevChaseDistance = engaged ? distance : -1f;
 
-            bool striking = attackAnimTail > 0f;
+            bool striking = attackStopTimer > 0f;
 
             // Анти-залипание преследования: если робот НЕ приближается к цели
             // (упёрся в препятствие) — цель НЕ сбрасывается. Мечник помнит
@@ -229,6 +230,20 @@ namespace CarGame.Combat
             // иначе ComputeAvoidance начинает её обходить вместо атаки. Пустая
             // машина остаётся препятствием и обходится штатно (по требованию).
             bool chargeOccupiedCar = engaged && IsOccupiedVehicleTarget();
+            if (chargeOccupiedCar)
+            {
+                // Машина крупная: центр корпуса далеко, а бить надо по капоту.
+                // Перенацеливаемся на БЛИЖАЙШУЮ ТОЧКУ ПОВЕРХНОСТИ кузова — иначе
+                // робот останавливался в метрах от машины («не мог попасть»).
+                float surface = SurfaceDistanceTo(FrontPosition + Vector3.up, Target);
+                if (surface > attackRange)
+                {
+                    Vector3 toSurface = ClosestCarPoint(Target) - FrontPosition;
+                    toSurface.y = 0f;
+                    if (toSurface.sqrMagnitude > 0.0001f)
+                        desiredDirection = toSurface;
+                }
+            }
             Vector3 direction = chargeOccupiedCar
                 ? (desiredDirection.sqrMagnitude > 0.0001f ? desiredDirection.normalized : Vector3.zero)
                 : ComputeAvoidance(desiredDirection);
@@ -255,28 +270,24 @@ namespace CarGame.Combat
 
             if (!engaged || Target == null) return;
 
-            // Машина — крупный объект: Health на её корне, а центр корпуса может
-            // быть дальше attackRange даже когда робот стоит вплотную к капоту.
-            // Для занятой машины считаем дистанцию до ближайшей точки коллайдера.
-            float strikeDistance = distance;
-            if (IsOccupiedVehicleTarget())
-            {
-                Collider carCollider = Target.GetComponent<Collider>();
-                if (carCollider == null) carCollider = Target.GetComponentInChildren<Collider>();
-                if (carCollider != null)
-                    strikeDistance = Vector3.Distance(FrontPosition + Vector3.up, carCollider.ClosestPoint(FrontPosition + Vector3.up));
-            }
+            // Дистанция удара считается ДО ПОВЕРХНОСТИ цели (для машины — по
+            // ближайшей точке коллайдеров корпуса CarController.BodyColliders),
+            // а не до центра Health на корне: иначе мечник, упоровшись носом в
+            // капот, стоял формально в 3+ метрах и никогда не мог ударить.
+            float strikeDistance = SurfaceDistanceTo(FrontPosition + Vector3.up, Target);
 
-            if (strikeDistance > EffectiveStrikeRange(Target)) return;
+            // По ТЗ: ЛЮБОЕ касание машины (занятой игроком) обязано приводить к
+            // урону — даже если формальная дистанция чуть больше радиуса меча.
+            bool touchingCar = IsOccupiedVehicleTarget() && strikeDistance <= 0.1f;
+
+            if (!touchingCar && strikeDistance > EffectiveStrikeRange(Target)) return;
             if (Time.time < nextAttackTime) return;
 
             nextAttackTime = Time.time + attackCooldown;
-            // Стоять робот должен ровно столько, сколько длится сам замах
-            // (клип Attack), а не весь кулдаун. Раньше attackStopTimer =
-            // max(cooldown, длина клипа) запирал мечника в стойке удара на всю
-            // паузу между атаками — визуально это выглядело как «застрял в
-            // анимации атаки после первого удара».
-            attackAnimTail = AttackStateLength();
+            // По ТЗ: в момент атаки бот останавливается и НЕ двигается 2 секунды
+            // после неё (attackStopDuration). Берём максимум из 2 с и длины клипа
+            // замаха, чтобы робот не сдвинулся раньше, чем доиграет атаку.
+            attackStopTimer = Mathf.Max(attackStopDuration, AttackStateLength());
             PlayAttack();
             Strike(Target, distance);
         }
@@ -571,46 +582,47 @@ namespace CarGame.Combat
         {
             if (Target == null || !Target.IsCar) return false;
 
-            CarController car = Target.GetComponent<CarController>();
-            if (car == null) car = Target.GetComponentInParent<CarController>();
-            if (car == null) return false;
+            // Канонический признак занятости: CarController.IsOccupied (driver !=
+            // null). Водитель ставится при EnterVehicle и снимается при выходе —
+            // именно он делает игрока неуязвимым/невидимым для ботов.
+            if (IsTargetOccupied(Target)) return true;
 
-            // Вариант 1: у машины есть за рулём конкретный PlayerController.
-            PlayerController driver = car.Driver;
-            if (driver != null && !driver.Equals(null)) return true;
+            // Резервная проверка на случай рассинхронизации ссылки водителя:
+            // игрок официально сидит в ЭТОЙ машине (player.CurrentVehicle).
+            PlayerController player = FindPlayer();
+            if (player != null && !player.Equals(null) && player.IsInCar
+                && player.CurrentVehicle != null
+                && player.CurrentVehicle.Health == Target) return true;
 
-            // Вариант 2: даже если ссылка на водителя не проставилась (рестарт
-            // забега, пересборка сцены), сам Health цели принадлежит машине —
-            // считаем её занятой, пока игрок физически находится в её объёме:
-            // именно так «игрок в машине» определяется для ботов стабильно.
-            return IsPlayerInsideCarBounds(car);
+            return false;
         }
 
         /// <summary>
-        /// Игрок внутри габаритов машины (плюс небольшой допуск). Используется
-        /// как резервный признак занятости: CharacterController игрока при
-        /// посадке телепортируется в точку сиденья внутри корпуса машины.
+        /// Ближайшая к кромке атаки точка на коллайдерах корпуса цели-машины
+        /// (CarController.BodyColliders). Используется для наведения: бежать
+        /// нужно на поверхность кузова, а не на его центр.
         /// </summary>
-        private bool IsPlayerInsideCarBounds(CarController car)
+        private Vector3 ClosestCarPoint(Health target)
         {
-            if (car == null || car.Equals(null)) return false;
+            Vector3 origin = FrontPosition + Vector3.up;
+            if (target == null || !target.IsCar) return target != null ? target.transform.position : origin;
 
-            PlayerController player = FindPlayer();
-            if (player == null || player.Equals(null)) return false;
+            CarController car = target.GetComponent<CarController>();
+            if (car == null) car = target.GetComponentInParent<CarController>();
 
-            // Игрок уже официально сидит в какой-то машине: если это наша цель —
-            // машина занята, если в другой — эта считается свободной.
-            if (player.IsInCar) return false;
+            Collider[] bodies = car != null ? car.BodyColliders : null;
+            if (bodies == null || bodies.Length == 0) return target.transform.position;
 
-            Collider carCollider = car.GetComponent<Collider>();
-            if (carCollider == null) carCollider = car.GetComponentInChildren<Collider>();
-            if (carCollider == null) return false;
-
-            Bounds bounds = carCollider.bounds;
-            bounds.Expand(0.5f);
-
-            Vector3 feet = player.transform.position + Vector3.up * 0.4f;
-            return bounds.Contains(feet);
+            Vector3 best = target.transform.position;
+            float bestDist = float.MaxValue;
+            foreach (Collider col in bodies)
+            {
+                if (col == null || col.Equals(null) || !col.enabled) continue;
+                Vector3 closest = col.ClosestPoint(origin);
+                float d = Vector3.Distance(origin, closest);
+                if (d < bestDist) { bestDist = d; best = closest; }
+            }
+            return best;
         }
 
         /// <summary>
@@ -730,6 +742,32 @@ namespace CarGame.Combat
         {
             if (target == null) return attackRange;
 
+            // Для машины радиус удара увеличивается по габаритам КОРПУСА (все
+            // коллайдеры кузова из CarController.BodyColliders), а не одного
+            // первого найденного — иначе удар «не дотягивался» до капота/кормы.
+            if (target.IsCar)
+            {
+                CarController car = target.GetComponent<CarController>();
+                if (car == null) car = target.GetComponentInParent<CarController>();
+                if (car != null)
+                {
+                    float reach = attackRange;
+                    Vector3 origin = FrontPosition + Vector3.up;
+                    Collider[] bodies = car.BodyColliders;
+                    if (bodies != null)
+                    {
+                        foreach (Collider col in bodies)
+                        {
+                            if (col == null || col.Equals(null)) continue;
+                            Vector3 closest = col.ClosestPoint(origin);
+                            float d = Vector3.Distance(origin, closest);
+                            if (d > reach) reach = d;
+                        }
+                    }
+                    return Mathf.Max(reach, attackRange);
+                }
+            }
+
             Collider bodyCollider = target.GetComponent<Collider>();
             if (bodyCollider == null)
                 bodyCollider = target.GetComponentInChildren<Collider>();
@@ -747,37 +785,42 @@ namespace CarGame.Combat
             Vector3 origin = FrontPosition + Vector3.up;
             Vector3 point = target.transform.position + Vector3.up;
 
-            bool occupiedCar = IsOccupiedVehicleTarget();
+            // Цель-машина (занятая или нет): бьём ВСЕГДА по ХП кузова, а не по
+            // водителю. Игрок в машине неуязвим и невидим — любой его Health
+            // TakeDamage проглотит молча. Точка удара — ближайшая точка корпуса.
+            CarController struckCar = target.GetComponent<CarController>();
+            if (struckCar == null) struckCar = target.GetComponentInParent<CarController>();
 
-            // Машина с игроком внутри — цель: бьём по ней при любом касании,
-            // Linecast-проверку «не сквозь стену» для неё пропускаем (корпус
-            // машины всегда перекрывает луч). Пустая машина/препятства — как раньше.
-            if (!occupiedCar)
+            if (struckCar != null)
             {
-                if (Physics.Linecast(origin, point, out RaycastHit hit, ~0, QueryTriggerInteraction.Ignore)
-                    && !hit.collider.transform.IsChildOf(target.transform)
-                    && !hit.collider.transform.IsChildOf(transform))
-                    return;
-            }
-            else
-            {
-                // Занятая машина: берём ближайшую точку на её коллайдере вместо
-                // центра корпуса — так удар проходит и у короткого меча.
-                Collider bodyCollider = target.GetComponent<Collider>();
-                if (bodyCollider == null) bodyCollider = target.GetComponentInChildren<Collider>();
-                if (bodyCollider != null)
+                Collider[] bodies = struckCar.BodyColliders;
+                Vector3 best = Vector3.zero;
+                float bestDist = float.MaxValue;
+                if (bodies != null)
                 {
-                    Vector3 closest = bodyCollider.ClosestPoint(origin);
-                    if ((closest - origin).sqrMagnitude <= EffectiveStrikeRange(target) * EffectiveStrikeRange(target))
-                        point = closest + Vector3.up * 0.2f;
+                    foreach (Collider col in bodies)
+                    {
+                        if (col == null || col.Equals(null) || !col.enabled) continue;
+                        Vector3 closest = col.ClosestPoint(origin);
+                        float d = Vector3.Distance(origin, closest);
+                        if (d < bestDist) { bestDist = d; best = closest; }
+                    }
                 }
+                if (bestDist < float.MaxValue) point = best + Vector3.up * 0.2f;
+
+                float carDamage = attackDamage * carDamageMultiplier;
+                Health carHealth = struckCar.Health != null ? struckCar.Health : target;
+                carHealth.TakeDamage(new DamageInfo(carDamage, gameObject, point, (point - origin).normalized));
+                return;
             }
 
-            float damage = attackDamage;
-            CarController car = target.GetComponentInParent<CarController>();
-            if (car != null) damage *= carDamageMultiplier;
+            // Пешая цель: прежняя проверка «бей не сквозь стену».
+            if (Physics.Linecast(origin, point, out RaycastHit hit, ~0, QueryTriggerInteraction.Ignore)
+                && !hit.collider.transform.IsChildOf(target.transform)
+                && !hit.collider.transform.IsChildOf(transform))
+                return;
 
-            target.TakeDamage(new DamageInfo(damage, gameObject, point, (point - origin).normalized));
+            target.TakeDamage(new DamageInfo(attackDamage, gameObject, point, (point - origin).normalized));
         }
 
         private void OnDied(Health dead)

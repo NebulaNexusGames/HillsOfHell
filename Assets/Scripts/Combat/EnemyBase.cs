@@ -450,6 +450,34 @@ namespace CarGame.Combat
             Health onFoot = player.Health;
             Health vehicle = player.CurrentVehicle != null ? player.CurrentVehicle.Health : null;
 
+            // Игрок внутри машины НЕУЯЗВИМ и для ботов НЕВИДИМ: пока он за
+            // рулём, единственная цель — сама машина, помеченная как
+            // «Приоритетная цель» (IsPriorityCarTarget). Мечник, дрон и
+            // камикадзе обязаны атаковать именно её, а не пешего игрока.
+            if (IsTargetOccupied(vehicle))
+            {
+                if (CanSeePriorityCar(vehicle))
+                {
+                    lastSeenTime = Time.time;
+                    Target = vehicle;
+                    return true;
+                }
+
+                // Машина с водителем вне зоны обнаружения — цели нет вовсе:
+                // невидимого игрока бот искать не должен.
+                return false;
+            }
+
+            // Игрок сел в машину «на глазах» у робота: цель обязана СРАЗУ
+            // переключиться с пешего игрока на машину (маркер «Приоритетная
+            // цель»), иначе робот продолжал бегать за невидимым водителем.
+            if (HasTarget && IsTargetOccupied(vehicle) && Target != vehicle)
+            {
+                lastSeenTime = Time.time;
+                Target = vehicle;
+                return true;
+            }
+
             Health best = null;
             float bestDistance = float.MaxValue;
 
@@ -465,6 +493,22 @@ namespace CarGame.Combat
             lastSeenTime = Time.time;
             Target = best;
             return true;
+        }
+
+        /// <summary>
+        /// Может ли робот заметить машину с водителем: либо он внутри
+        /// невидимой зоны вокруг неё (гарантированное обнаружение), либо
+        /// машина в пределах дальности захвата. Проверки сектора обзора и
+        /// линии взгляда здесь сознательно пропущены: иначе мечник, упоровшись
+        /// носом в капот, «терял» приоритетную цель за собственным корпусом.
+        /// </summary>
+        private bool CanSeePriorityCar(Health car)
+        {
+            if (car == null || car.Equals(null) || car.IsDead) return false;
+            if (IsTargetAwarenessZone(car)) return true;
+
+            Vector3 toTarget = car.transform.position - transform.position;
+            return toTarget.magnitude <= DetectRange;
         }
 
         /// <summary>
