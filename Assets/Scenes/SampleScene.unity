@@ -16,6 +16,7 @@ MonoBehaviour:
   volume: 1
   jumpClip: {fileID: 0}
   damageClip: {fileID: 0}
+  dynamicStepSound: 0
   defaultStepClips:
   - {fileID: 8300000, guid: f081b9ca5a6efd14dab4a5caa70a1fc8, type: 3}
   surfaces:
@@ -33,7 +34,7 @@ MonoBehaviour:
     tone: 140
   stepDistance: 1.9
   stepMinSpeed: 0.6
-  stepVolume: 0.7
+  stepVolume: 1
   defaultGrit: 0.35
   defaultTone: 118
   groundProbe: 0.4
@@ -20380,7 +20381,7 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: 
   maxHealth: 100
-  owner: 2
+  owner: 0
   safeWhenDead: 1
   fixOne: 0
   fixOneMetal: 0
