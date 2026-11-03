@@ -30,6 +30,12 @@ namespace CarGame.Items
         [Tooltip("Состояние предмета, переживающее выброс: у ствола — сколько патронов заряжено")]
         [SerializeField] private int payload;
 
+        [Header("Звук")]
+        [Tooltip("Звук, который воспроизводится при поднятии предмета. Если не задан — предмет подбирается без звука")]
+        [SerializeField] private AudioClip pickupSound;
+        [Tooltip("Громкость звука поднятия")]
+        [SerializeField] [Range(0f, 2f)] private float pickupSoundVolume = 1f;
+
         private readonly System.Collections.Generic.List<Collider> colliderCache = new System.Collections.Generic.List<Collider>();
         private readonly System.Collections.Generic.List<bool> triggerCache = new System.Collections.Generic.List<bool>();
 
@@ -137,6 +143,8 @@ namespace CarGame.Items
             if (interactor == null || interactor.Hand == null) return;
             if (IsConsumed) return;
 
+            PlayPickupSound();
+
             // Канистра переносит своё топливо в руку: у каждой канистры в мире
             // свой запас бензина, а не общий на всех.
             interactor.Hand.BindCanister(this);
@@ -147,6 +155,32 @@ namespace CarGame.Items
             if (TryStoreInInventory(interactor)) return;
 
             interactor.Hand.PickUp(this);
+        }
+
+        /// <summary>
+        /// Играет звук поднятия, если он назначен в инспекторе. Предмет при
+        /// этом может быть выключен (рука показывает заготовленный вариант, а
+        /// сам объект уходит в неактивное состояние), поэтому AudioSource
+        /// берётся с игрока — иначе звук оборвался бы вместе с объектом.
+        /// </summary>
+        private void PlayPickupSound()
+        {
+            if (pickupSound == null) return;
+
+            PlayerController player = FindFirstObjectByType<PlayerController>();
+            AudioSource source = null;
+            if (player != null)
+            {
+                source = player.GetComponent<AudioSource>();
+                if (source == null) source = player.gameObject.AddComponent<AudioSource>();
+            }
+            if (source == null)
+            {
+                source = GetComponent<AudioSource>();
+                if (source == null) source = gameObject.AddComponent<AudioSource>();
+            }
+
+            source.PlayOneShot(pickupSound, Mathf.Max(0f, pickupSoundVolume));
         }
 
         /// <summary>
