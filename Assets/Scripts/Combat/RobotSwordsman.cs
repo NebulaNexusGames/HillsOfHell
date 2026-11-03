@@ -134,8 +134,12 @@ namespace CarGame.Combat
         private float attackPlayUntil;
         // ===== СОСТОЯНИЕ DEATH =====
         private bool dying;
-        // Момент смерти (Time.time). Таймер deathExplodeDelay — в СЕКУНДАХ,
-        // считается от него (Time.time тоже в секундах).
+        // Момент смерти. Таймер deathExplodeDelay — в РЕАЛЬНЫХ секундах,
+        // поэтому отсчёт ведётся по Time.unscaledTime (он не зависит от
+        // Time.timeScale): паузы и меню, замораживающие время игры
+        // (timeScale = 0), больше не «весят» как вечность и не растягивают
+        // взрыв. На обычной скорости (timeScale = 1) unscaledTime идёт
+        // один-в-один с реальным временем: 10 в инспекторе = 10 секунд.
         private float deathTime;
         // Зацикленный источник звука тряски на время предсмертной агонии.
         private AudioSource deathRattleSource;
@@ -197,7 +201,9 @@ namespace CarGame.Combat
             // сам через loop).
             if (dying)
             {
-                if (Time.time - deathTime >= deathExplodeDelay) Explode();
+                // Отсчёт в реальных секундах (unscaledTime), чтобы таймер не
+                // растягивался паузами/меню с Time.timeScale = 0.
+                if (Time.unscaledTime - deathTime >= deathExplodeDelay) Explode();
                 return;
             }
 
@@ -630,7 +636,7 @@ namespace CarGame.Combat
         {
             if (dying) return;
             dying = true;
-            deathTime = Time.time;
+            deathTime = Time.unscaledTime;
 
             if (body != null) body.linearVelocity = Vector3.zero;
 
