@@ -79,6 +79,11 @@ namespace CarGame.Combat
         private string currentState;
         private float attackLockTime;
         private float attackStopTimer;
+        // Сколько ударов РЕАЛЬНО дошло до цели за время жизни робота. Нужно,
+        // чтобы отличить «холостую» атаку сразу после спавна (цель далеко,
+        // замах по воздуху) от настоящего боя: пост-ударная 2-секундная
+        // заминка включается только после первого реального контакта.
+        private int strikesDone;
         // Заминка после удара (по ТЗ — 2 секунды): робот не двигается, пока
         // таймер активен. Тикает в Update, ставится в момент удара.
         private Vector3 lastTargetPosition;
@@ -167,6 +172,26 @@ namespace CarGame.Combat
             if (health != null) health.Died += OnDied;
         }
 
+        /// <summary>
+        /// Пост-ударная заминка (attackStopDuration) — требование ТЗ, но оно
+        /// осмысленно только после РЕАЛЬНО нанёсшего урон удара. «Холостые»
+        /// замахи (робот ещё не достал цель, промахнулся сквозь стену) НЕ
+        /// должны обнулять скорость и залипать аниматор в Idle: иначе мечник
+        /// сразу после спавна бьёт воздух, встаёт на месте и топчется, пока
+        /// игрок сам не подойдёт под удар. Здесь блокировка движения
+        /// (EnemyBase.attackLockUntil) усекается до длины клипа Attack — робот
+        /// стоит ровно столько, сколько играется замах, и продолжает бежать.
+        /// </summary>
+        private void TrimMovementLockToAttackClip()
+        {
+            if (strikesDone > 0) return;
+            if (animator == null || !animateStrike) return;
+
+            float clip = AttackStateLength();
+            float allowed = Time.time + Mathf.Max(0.1f, clip);
+            LockMovement(Mathf.Max(0f, allowed - Time.time));
+        }
+
         private void Update()
         {
             if (health == null || health.IsDead) return;
@@ -177,6 +202,8 @@ namespace CarGame.Combat
             // ровно столько, сколько длится клип Attack (~0.42 с), а не весь
             // интервал между ударами — иначе он «залипал» в стойке атаки.
             if (attackStopTimer > 0f) attackStopTimer -= Time.deltaTime;
+
+            TrimMovementLockToAttackClip();
 
             Vector3 destination = ResolveDestination();
             Vector3 flatDelta = Vector3.ProjectOnPlane(destination - FrontPosition, Vector3.up);
@@ -260,6 +287,11 @@ namespace CarGame.Combat
                 ? SurfaceDistanceTo(FrontPosition + Vector3.up, Target)
                 : float.MaxValue;
 
+            // Цель — машина (занятая или пустая). Отдельно: занята ли игрокОМ.
+            bool targetIsCar = engaged && Target != null && !Target.Equals(null)
+                && (Target.IsCar || Target.GetComponentInParent<CarController>() != null);
+            bool occupiedCarNow = engaged && IsOccupiedVehicleTarget();
+
             // Анти-залипание преследования: если робот НЕ приближается к цели
             // (упёрся в препятствие) — цель НЕ сбрасывается. Мечник помнит
             // игрока targetMemoryDuration секунд и обходит преграду
@@ -278,7 +310,7 @@ namespace CarGame.Combat
             // Машина с игроком внутри — цель, а не препятствие: идём прямо на неё,
             // иначе ComputeAvoidance начинает её обходить вместо атаки. Пустая
             // машина остаётся препятствием и обходится штатно (по требованию).
-            bool chargeOccupiedCar = engaged && IsOccupiedVehicleTarget();
+            bool chargeOccupiedCar = occupiedCarNow;
 
             // Страховка от «залипания» объезда: робот мог войти в detour ещё до
             // посадки игрока в машину (пустое авто = препятствие) или из-за
@@ -293,8 +325,13 @@ namespace CarGame.Combat
                 // Машина крупная: центр корпуса далеко, а бить надо по капоту.
                 // Перенацеливаемся на БЛИЖАЙШУЮ ТОЧКУ ПОВЕРХНОСТИ кузова — иначе
                 // робот останавливался в метрах от машины («не мог попасть»).
+                // Порог остановки — физический контакт капсулы с кузовом:
+                // дистанция до поверхности меньше 0.35 м. Раньше робот вставал,
+                // как только центр Health машины попадал в радиус EffectiveStrikeRange
+                // (~2 м от поверхности) — до машины он НЕ доходил, удар проходил
+                // только если игрок сам подъезжал к боту.
                 float surface = SurfaceDistanceTo(FrontPosition + Vector3.up, Target);
-                if (surface > attackRange * 0.6f)
+                if (surface > 0.35f)
                 {
                     Vector3 toSurface = ClosestCarPoint(Target) - FrontPosition;
                     toSurface.y = 0f;
@@ -320,12 +357,41 @@ namespace CarGame.Combat
             //   стоит неподвижно attackStopDuration секунд;
             // - targetStill && inReach: цель не двигается и она в радиусе удара —
             //   мечник тоже стоит и ждёт, пока цель сдвинется.
-            bool inReach = strikeDistanceNow <= EffectiveStrikeRange(Target);
+            // Радиус, с которого мечник реально может ударить цель (машина
+            // расширяется до ближайшей точки кузова внутри EffectiveStrikeRange).
+            float reach = EffectiveStrikeRange(Target);
+            bool inReach = strikeDistanceNow <= reach;
+
+            // Подход к занятой машине: робот обязан добежать ДО КУЗОВА и
+            // коснуться его. Раньше блокировка движения считалась по центру
+            // Health машины (EffectiveStrikeRange), порог получался ~2 м от
+            // поверхности, капсула робота упиралась в бампер раньше — и мечник
+            // «застывал» у машины, не доставая до неё (урон проходил только
+            // когда игрок сам подъезжал). Для занятой машины теперь: стоим
+            // ТОЛЬКО когда реально касаются корпуса или дистанция до поверхности
+            // меньше радиуса удара + запас на толщину капсулы.
+            if (occupiedCarNow)
+                inReach = strikeDistanceNow <= reach + 0.35f || IsTouchingCarBody();
+
+            // Пост-ударная заминка (attackStopTimer / LockMovement): робот стоит
+            // attackStopDuration секунд ПОСЛЕ КАЖДОГО удара. Это ТРЕБОВАНИЕ ТЗ,
+            // но оно НЕ должно действовать на «холостой» первый удар сразу после
+            // спавна: если за время жизни ещё ни разу не было реального контакта
+            // с целью (strikesDone == 0), заминку пропускаем — иначе мечник
+            // «с момента появления атакует и встаёт на месте», топчется и ждёт,
+            // пока игрок сам подойдёт под удар.
+            bool hasRealContact = strikesDone > 0;
+            bool postStrikeHold = striking && hasRealContact;
+
             bool mayMove = CanMoveNow() && !(engaged && targetStill && inReach);
-            float speed = !mayMove || striking ? 0f : engaged ? moveSpeed : PatrolSpeed;
+            float speed = !mayMove || postStrikeHold ? 0f : engaged ? moveSpeed : PatrolSpeed;
             Move(mayMove ? direction : Vector3.zero, speed);
 
-            UpdateAnimation(engaged, striking);
+            // В аниматоре «замах + пост-ударная стойка» держится только когда
+            // заминка реальна (был контакт с целью). Иначе робот сразу после
+            // доигранного клипа Attack возвращается к Run/Walk — без «залипания
+            // в Idle» при холостой атаке на пустом месте.
+            UpdateAnimation(engaged, postStrikeHold);
 
             if (Voice != null && body != null)
                 Voice.Step(new Vector3(body.linearVelocity.x, 0f, body.linearVelocity.z), engaged);
@@ -346,7 +412,7 @@ namespace CarGame.Combat
             // анимация замаха играла, а урон не наносился («бьёт, но не дамажит»,
             // «не трогает багажник»). Теперь: если машина-цель в пределах длины
             // меча от носовой точки робота — удар засчитывается по поверхности.
-            bool occupiedCar = IsOccupiedVehicleTarget();
+            bool occupiedCar = occupiedCarNow;
             bool touchingCar = occupiedCar && strikeDistance <= Mathf.Max(1.2f, attackRange);
 
             // Для занятой машины дополнительно: если робот реально касается её
@@ -358,14 +424,32 @@ namespace CarGame.Combat
             // центра кузова легко превышает радиус меча, и раньше удар просто
             // не проходил дальше капота. Бьём машину всегда, когда дотянулись
             // до любой точки её корпуса.
-            bool carTarget = occupiedCar || (Target != null && !Target.Equals(null)
-                && Target.GetComponentInParent<CarController>() != null);
-            if (!touchingCar && !carTarget && strikeDistance > EffectiveStrikeRange(Target)) return;
-            if (!touchingCar && carTarget && strikeDistance > Mathf.Max(attackRange + 1f, EffectiveStrikeRange(Target))) return;
+            bool carTarget = targetIsCar;
+            if (!touchingCar && !carTarget && strikeDistance > reach) return;
+            if (!touchingCar && carTarget && strikeDistance > Mathf.Max(attackRange + 1f, reach)) return;
+
+            // Удар засчитывается только при РЕАЛЬНОМ достреле до поверхности
+            // цели. Раньше для машин порог расширялся габаритом кузова
+            // (EffectiveStrikeRange возвращал расстояние до самой дальней
+            // точки корпуса — у длинной машины больше 4 м), и мечник начинал
+            // замах издалека: анимация проигрывана, Linecast упирается в
+            // воздух, урон не проходит («бьёт, но попасть может только если
+            // игрок сам подъедет»). Теперь: пешая цель — радиус меча; машина —
+            // дистанция ДО ПОВЕРХНОСТИ кузова не больше радиуса меча (или
+            // физическое касание корпуса).
+            float strikeReach = Mathf.Max(attackRange, reach);
+            bool inTrueRange = carTarget
+                ? (strikeDistance <= attackRange || touchingCar)
+                : strikeDistance <= strikeReach;
+            if (!inTrueRange) return;
+
             if (Time.time < nextAttackTime) return;
             // По ТЗ: если цель НЕ двигается, мечник стоит вместе с ней и новый
-            // замах не начинает — ждёт, пока цель сдвинется.
-            if (targetStill) return;
+            // замах не начинает — ждёт, пока цель сдвинется. Исключение:
+            // машина-цель. Игрок за рулём неподвижного авто формально «стоит»,
+            // но по требованию мечник обязан бить занятую машину при касании —
+            // иначе он вечно топчется у кузова, ожидая движения стальной цели.
+            if (targetStill && !carTarget) return;
 
             nextAttackTime = Time.time + attackCooldown;
             // По ТЗ: в момент атаки бот останавливается и НЕ двигается 2 секунды
@@ -376,6 +460,7 @@ namespace CarGame.Combat
             // на всё время пост-ударного КД, даже если наследник что-то упустил.
             LockMovement(attackStopTimer);
             PlayAttack();
+            strikesDone++;
             Strike(Target, distance);
         }
 

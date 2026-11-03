@@ -1182,6 +1182,9 @@ MonoBehaviour:
   attackDamage: 11
   carDamageMultiplier: 1.4
   attackCooldown: 1.1
+  attackStopDuration: 2
+  targetStillSpeed: 0.35
+  targetMovingSpeed: 0.6
   deathSound: {fileID: 0}
   playDeathSound: 1
   deathSoundVolume: 1
