@@ -253,8 +253,16 @@ namespace CarGame.Combat
             // во время замаха (attackPlaying) и на плановой передышке патруля
             // (PatrolAllowsMove). Больше нигде: преследование бессрочное,
             // патруль ходит.
+            // ВАЖНО: CanMoveNow()/PatrolAllowsMove() НЕ используются — при
+            // включенном requireReachableTarget базовый класс ставит плановую
+            // паузу (pauseUntil) на время обхода препятствий, и робот «топтался
+            // на месте» в Idle/Walk даже когда маршрут чист. По ТЗ движение
+            // разрешено ВСЕГДА, кроме: замаха атаки и 2-секундной стойки после
+            // удара. Передышка патруля сама приводит робота к точке (destination
+            // совпадает с позицией → Move тормозит скорость до нуля), анимация
+            // при этом честно переключается Walk ↔ Idle.
             bool holdingAfterStrike = strikeHoldTimer > 0f;
-            bool mayMove = CanMoveNow() && !holdingAfterStrike && !attackPlaying && PatrolAllowsMove();
+            bool mayMove = !holdingAfterStrike && !attackPlaying;
 
             UpdateStuckCheck(body != null ? body.linearVelocity : Vector3.zero, mayMove);
 
@@ -283,7 +291,7 @@ namespace CarGame.Combat
                 string desired;
                 if (holdingAfterStrike) desired = idleState;          // шаг 2 атаки: стойка Idle
                 else if (engaged) desired = runState;                  // преследование: Run
-                else if (PatrolAllowsMove()) desired = walkState;      // патруль: шаг 1 — Walk
+                else if (Time.time >= patrolWaitUntil) desired = walkState; // патруль: шаг 1 — Walk
                 else desired = idleState;                              // патруль: шаг 2 — передышка Idle
                 ApplyState(desired);
             }

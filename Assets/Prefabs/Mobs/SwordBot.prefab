@@ -1137,7 +1137,7 @@ MonoBehaviour:
   requireLineOfSight: 1
   sightBlockers:
     serializedVersion: 2
-    m_Bits: 4294967295
+    m_Bits: 1
   loseTargetMemory: 4
   rememberTargetWhenLost: 1
   sightAngleDegrees: 120
@@ -1162,7 +1162,7 @@ MonoBehaviour:
   obstacleProbe: 3
   obstacleMask:
     serializedVersion: 2
-    m_Bits: 4294967295
+    m_Bits: 1
   avoidLowDebris: 1
   avoidAngleStep: 45
   avoidClearance: 0.12
@@ -1195,6 +1195,7 @@ MonoBehaviour:
   shakeSound: {fileID: 8300000, guid: 878fc179faa977345894493f62abdef3, type: 3}
 =======
   attackStopDuration: 2
+  shakeSound: {fileID: 0}
   dieParameter: Die
   deathExplodeDelay: 1.5
   explosionPrefab: {fileID: 5316626115453355477, guid: 77450e5255e83d549b294f418ebf06f6, type: 3}
