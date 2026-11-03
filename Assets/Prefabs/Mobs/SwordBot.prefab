@@ -1026,7 +1026,6 @@ GameObject:
   - component: {fileID: 917958362691522882}
   - component: {fileID: 2444545356843522034}
   - component: {fileID: 4239960203685974670}
-  - component: {fileID: 1008166848422248098}
   m_Layer: 0
   m_Name: SwordBot
   m_TagString: Untagged
@@ -1175,8 +1174,13 @@ MonoBehaviour:
   stuckSpeed: 0.4
   stuckDelay: 0.7
   detourDuration: 1.3
-  carDamageMultiplier: 1.4
+  maxHealth: 60
+  moveSpeed: 3.6
+  turnSpeed: 420
+  attackRange: 2.1
+  attackDamage: 11
   attackCooldown: 1.1
+  carDamageMultiplier: 1.4
   attackStopDuration: 2
   dieParameter: Die
   deathExplodeDelay: 1.5

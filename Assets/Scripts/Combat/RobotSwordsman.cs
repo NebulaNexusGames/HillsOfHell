@@ -303,7 +303,7 @@ namespace CarGame.Combat
                 string desired;
                 if (holdingAfterStrike) desired = idleState;          // шаг 2 атаки: стойка Idle
                 else if (engaged) desired = runState;                  // преследование: Run
-                else if (PatrolAllowsMove()) desired = walkState; // патруль: шаг 1 — Walk
+                else if (Time.time >= pauseUntil) desired = walkState; // патруль: шаг 1 — Walk
                 else desired = idleState;                              // патруль: шаг 2 — передышка Idle
                 ApplyState(desired);
             }
