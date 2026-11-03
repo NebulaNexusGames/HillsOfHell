@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using CarGame.Items;
+using CarGame.Player;
 using UnityEngine;
 
 namespace CarGame.Combat
