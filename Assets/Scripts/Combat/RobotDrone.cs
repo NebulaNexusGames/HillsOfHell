@@ -58,6 +58,9 @@ namespace CarGame.Combat
         [SerializeField] private float shootRange = 55f;
         [Tooltip("Пауза между выстрелами, с")]
         [SerializeField] private float fireInterval = 0.9f;
+        [Tooltip("Сколько секунд дрон зависает неподвижно после каждого выстрела " +
+                 "(по ТЗ: в момент атаки он двигаться не должен). 0 — по умолчанию, треть fireInterval")]
+        [SerializeField] private float shotFreezeDuration = 0f;
         [Tooltip("Точки стрельбы. Выстрелы идут по ним поочерёдно: сначала первая, потом вторая, и так далее. Если пусто — из центра дрона")]
         [SerializeField] private Transform[] firePoints = new Transform[0];
         [Tooltip("Урон выстрела")]
@@ -114,6 +117,9 @@ namespace CarGame.Combat
         private Quaternion tiltTarget = Quaternion.identity;
         private float bobPhase;
         private float nextFireTime;
+        // До этого момента дрон обязан висеть неподвижно (заморозка после
+        // выстрела — «в момент атаки он двигаться не должен»).
+        private float shotFreezeUntil;
         private int nextFirePoint = -1;
         private float orbitAngle;
         private Vector3 velocity;
@@ -580,15 +586,20 @@ namespace CarGame.Combat
 
         private void UpdateAttack()
         {
-            orbitAngle += orbitSpeed * Time.deltaTime;
+            // По ТЗ: в момент атаки дрон двигаться не должен. После выстрела
+            // орбита замораживается на shotFreezeDuration: dron висит на месте,
+            // только доворачивая нос к цели.
+            bool frozen = Time.time < shotFreezeUntil;
+
+            if (!frozen) orbitAngle += orbitSpeed * Time.deltaTime;
 
             Vector3 anchor = Target.transform.position + Vector3.up * hoverHeight;
             Vector3 offset = Quaternion.AngleAxis(Mathf.Rad2Deg * orbitAngle, Vector3.up) * Vector3.right * orbitRadius;
             Vector3 destination = anchor + offset;
 
             Vector3 toDestination = destination - FrontPosition;
-            UpdateStuckCheck(velocity, toDestination.sqrMagnitude > 0.0001f);
-            Move(toDestination, moveSpeed);
+            UpdateStuckCheck(velocity, !frozen && toDestination.sqrMagnitude > 0.0001f);
+            Move(frozen ? Vector3.zero : toDestination, frozen ? 0f : moveSpeed);
             FaceTarget(Target.transform.position + Vector3.up, turnSpeed, Time.deltaTime);
 
             if (Time.time < nextFireTime) return;
@@ -598,6 +609,9 @@ namespace CarGame.Combat
             if (!HasLineOfSight(Target)) return;
 
             nextFireTime = Time.time + fireInterval;
+            shotFreezeUntil = Time.time + (shotFreezeDuration > 0f
+                ? shotFreezeDuration
+                : Mathf.Max(0.15f, fireInterval / 3f));
             Fire();
         }
 
