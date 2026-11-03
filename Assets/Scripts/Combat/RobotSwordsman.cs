@@ -27,6 +27,11 @@ namespace CarGame.Combat
         [SerializeField] private float attackCooldown = 1.1f;
         [Tooltip("Сколько секунд робот стоит неподвижно после каждого удара (по ТЗ — 2 с).")]
         [SerializeField] private float attackStopDuration = 2f;
+        [Tooltip("Если цель стоит на месте (смещается меньше этого порога, м/с), мечник тоже " +
+                 "не двигается и не начинает новый замах, пока цель не сдвинется. 0 — отключено")]
+        [SerializeField] private float targetStillSpeed = 0.35f;
+        [Tooltip("Скорость цели выше этой считается «цель движется» — блокировка снимается")]
+        [SerializeField] private float targetMovingSpeed = 0.6f;
 
         [Header("Смерть")]
         [Tooltip("Звук гибели. Если пусто, будет использован встроенный процедурный звук")]
@@ -73,9 +78,15 @@ namespace CarGame.Combat
         private bool hadTarget;
         private string currentState;
         private float attackLockTime;
+        private float attackStopTimer;
         // Заминка после удара (по ТЗ — 2 секунды): робот не двигается, пока
         // таймер активен. Тикает в Update, ставится в момент удара.
-        private float attackStopTimer;
+        private Vector3 lastTargetPosition;
+        private bool hasLastTargetPosition;
+        // Гистерезис «цель стоит»: вход в состояние покоя по targetStillSpeed,
+        // выход — только когда цель реально разогналась до targetMovingSpeed.
+        // Иначе микродрожание физики дёргало бы запрет движения каждый кадр.
+        private bool targetHoldingStill;
         private float attackEnteredTime;
         // Диагностика преследования: робот больше НЕ сдаётся и не сбрасывает
         // цель при отсутствии прогресса (по ТЗ погоня бессрочная). Поля оставлены
@@ -209,7 +220,45 @@ namespace CarGame.Combat
             }
             prevChaseDistance = engaged ? distance : -1f;
 
+            // «Цель стоит на месте» — по смещению позиции цели между кадрами
+            // (Health цели у игрока/машины может не иметь Rigidbody, поэтому
+            // скорость считаем именно по перемещению трансформации). Гистерезис:
+            // вход в покой ниже targetStillSpeed, выход выше targetMovingSpeed.
+            bool targetStill = false;
+            if (engaged && Target != null && !Target.Equals(null))
+            {
+                Vector3 targetPosition = Target.transform.position;
+                if (hasLastTargetPosition)
+                {
+                    float targetSpeed = Vector3.Distance(targetPosition, lastTargetPosition)
+                        / Mathf.Max(0.0001f, Time.deltaTime);
+                    if (!targetHoldingStill && targetSpeed <= targetStillSpeed) targetHoldingStill = true;
+                    else if (targetHoldingStill && targetSpeed >= targetMovingSpeed) targetHoldingStill = false;
+                }
+                else
+                {
+                    targetHoldingStill = false;
+                }
+
+                lastTargetPosition = targetPosition;
+                hasLastTargetPosition = true;
+                targetStill = targetHoldingStill;
+            }
+            else
+            {
+                targetHoldingStill = false;
+                hasLastTargetPosition = false;
+            }
+
             bool striking = attackStopTimer > 0f;
+
+            // Дистанция до поверхности цели: считается ДО ПОВЕРХНОСТИ (для
+            // машины — по ближайшей точке коллайдеров корпуса), а не до центра
+            // Health. Нужна и для блока движения (стоит ли цель в радиусе
+            // удара), и для блока атаки ниже.
+            float strikeDistanceNow = engaged && Target != null && !Target.Equals(null)
+                ? SurfaceDistanceTo(FrontPosition + Vector3.up, Target)
+                : float.MaxValue;
 
             // Анти-залипание преследования: если робот НЕ приближается к цели
             // (упёрся в препятствие) — цель НЕ сбрасывается. Мечник помнит
@@ -266,13 +315,17 @@ namespace CarGame.Combat
             // Пауза на точке патруля: робот обязан встать, а не «идти» на месте.
             // Вне паузы мечник реально шагает к точке маршрута (анимация Walk),
             // дошёл «N шагов» — встаёт на restDuration секунд (анимация Idle).
-            // Преследование: скорость НЕ обнуляется никогда, кроме времени самого
-            // удара (striking) — бить нужно стоя, но это не «остановка погони».
-            bool mayMove = PatrolAllowsMove();
+            // По ТЗ скорость обнуляется в двух случаях:
+            // - striking: сам удар и пост-ударный КД (attackStopTimer) — робот
+            //   стоит неподвижно attackStopDuration секунд;
+            // - targetStill && inReach: цель не двигается и она в радиусе удара —
+            //   мечник тоже стоит и ждёт, пока цель сдвинется.
+            bool inReach = strikeDistanceNow <= EffectiveStrikeRange(Target);
+            bool mayMove = CanMoveNow() && !(engaged && targetStill && inReach);
             float speed = !mayMove || striking ? 0f : engaged ? moveSpeed : PatrolSpeed;
             Move(mayMove ? direction : Vector3.zero, speed);
 
-            UpdateAnimation(engaged);
+            UpdateAnimation(engaged, striking);
 
             if (Voice != null && body != null)
                 Voice.Step(new Vector3(body.linearVelocity.x, 0f, body.linearVelocity.z), engaged);
@@ -283,7 +336,7 @@ namespace CarGame.Combat
             // ближайшей точке коллайдеров корпуса CarController.BodyColliders),
             // а не до центра Health на корне: иначе мечник, упоровшись носом в
             // капот, стоял формально в 3+ метрах и никогда не мог ударить.
-            float strikeDistance = SurfaceDistanceTo(FrontPosition + Vector3.up, Target);
+            float strikeDistance = strikeDistanceNow;
 
             // По ТЗ: ЛЮБОЕ касание занятой машины обязано приводить к урону —
             // даже если формальная дистанция чуть больше радиуса меча. Порог
@@ -310,12 +363,18 @@ namespace CarGame.Combat
             if (!touchingCar && !carTarget && strikeDistance > EffectiveStrikeRange(Target)) return;
             if (!touchingCar && carTarget && strikeDistance > Mathf.Max(attackRange + 1f, EffectiveStrikeRange(Target))) return;
             if (Time.time < nextAttackTime) return;
+            // По ТЗ: если цель НЕ двигается, мечник стоит вместе с ней и новый
+            // замах не начинает — ждёт, пока цель сдвинется.
+            if (targetStill) return;
 
             nextAttackTime = Time.time + attackCooldown;
             // По ТЗ: в момент атаки бот останавливается и НЕ двигается 2 секунды
             // после неё (attackStopDuration). Берём максимум из 2 с и длины клипа
             // замаха, чтобы робот не сдвинулся раньше, чем доиграет атаку.
             attackStopTimer = Mathf.Max(attackStopDuration, AttackStateLength());
+            // Синхронизируем базовую блокировку EnemyBase: CanMoveNow() == false
+            // на всё время пост-ударного КД, даже если наследник что-то упустил.
+            LockMovement(attackStopTimer);
             PlayAttack();
             Strike(Target, distance);
         }
@@ -358,10 +417,17 @@ namespace CarGame.Combat
             return false;
         }
 
-        private void UpdateAnimation(bool engaged)
+        private void UpdateAnimation(bool engaged, bool striking)
         {
             hadTarget = engaged;
             if (animator == null) return;
+
+            // По ТЗ: после каждого удара робот уходит в КД и стоит на месте
+            // В АНИМАЦИИ IDLE. Во время пост-ударной блокировки не трогаем
+            // аниматор, пока клип Attack реально играется (иначе оборвём
+            // замах); как только аниматор вышел из Attack — форсируем Idle
+            // независимо от того, есть ли цель.
+            if (striking && attackLockTime > 0f && IsAnimatorInAttackState()) return;
 
             // SwordBot.controller НЕ имеет параметров MoveSpeed/InCombat — он
             // управляется псевдо-триггерами Idle / Walk / Run (тип Bool) и
@@ -410,9 +476,14 @@ namespace CarGame.Combat
                     // ResetTrigger чистит возможный pending-триггер Attack,
                     // чтобы он не вернул робота обратно в замах.
                     ResetAttackTrigger();
-                    int forcedHash = Animator.StringToHash(engaged ? runState : idleState);
+                    // В пост-ударном КД форсируем Idle (по ТЗ робот стоит в
+                    // Idle), иначе — возвращаемся к актуальному состоянию.
+                    int forcedHash = Animator.StringToHash(striking ? idleState : (engaged ? runState : idleState));
                     if (HasState(forcedHash)) animator.Play(forcedHash, 0, 0f);
                     attackLockTime = 0f;
+                    // При принудительном Play в Idle состояние «уже desired» —
+                    // обнуляем currentState, чтобы ApplyState ниже корректно
+                    // выставил Bool-флаги контроллера.
                     currentState = null;
                 }
                 else
@@ -433,7 +504,13 @@ namespace CarGame.Combat
             // на следующем кадре переключает состояние по актуальной логике ИИ:
             // цель есть — Run, цели нет — Walk/Idle по патрулю.
             string desired;
-            if (engaged)
+            if (striking)
+            {
+                // Пост-ударный КД: робот стоит на месте в Idle, даже если цель
+                // всё ещё видна. Движение уже обнулено выше (mayMove == false).
+                desired = idleState;
+            }
+            else if (engaged)
             {
                 // Увидел цель → бег к ней (анимация Run). Если бежать некуда
                 // (цель в пределах удара и робот стоит) — остаёмся в Run-стойке,
