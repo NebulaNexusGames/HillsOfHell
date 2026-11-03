@@ -468,6 +468,16 @@ namespace CarGame.Combat
                 return false;
             }
 
+            // Игрок сел в машину «на глазах» у робота: цель обязана СРАЗУ
+            // переключиться с пешего игрока на машину (маркер «Приоритетная
+            // цель»), иначе робот продолжал бегать за невидимым водителем.
+            if (HasTarget && IsTargetOccupied(vehicle) && Target != vehicle)
+            {
+                lastSeenTime = Time.time;
+                Target = vehicle;
+                return true;
+            }
+
             Health best = null;
             float bestDistance = float.MaxValue;
 

@@ -198,6 +198,12 @@ namespace CarGame.Combat
         public void TakeDamage(DamageInfo info)
         {
             if (info.amount <= 0f) return;
+
+            // Игрок за рулём неуязвим: его собственный Health боты достать не
+            // должны НИКОГДА (ни ближним боем, ни взрывом камикадзе, ни пулей).
+            // Машина под ударом — см. ниже: она получает урон даже от ботов.
+            if (invulnerable && IsPlayerHealth()) return;
+
             if (invulnerable)
             {
                 // Бессмертные объекты (двери) не теряют ХП, но могут реагировать
@@ -216,6 +222,13 @@ namespace CarGame.Combat
 
             IsDead = true;
             Died?.Invoke(this);
+        }
+
+        private bool IsPlayerHealth()
+        {
+            if (owner == HpOwner.Player) return true;
+            PlayerController pc = GetComponent<PlayerController>();
+            return pc != null && !pc.Equals(null);
         }
 
         public float Heal(float amount)
