@@ -276,9 +276,18 @@ namespace CarGame.Combat
             // капот, стоял формально в 3+ метрах и никогда не мог ударить.
             float strikeDistance = SurfaceDistanceTo(FrontPosition + Vector3.up, Target);
 
-            // По ТЗ: ЛЮБОЕ касание машины (занятой игроком) обязано приводить к
-            // урону — даже если формальная дистанция чуть больше радиуса меча.
-            bool touchingCar = IsOccupiedVehicleTarget() && strikeDistance <= 0.1f;
+            // По ТЗ: ЛЮБОЕ касание занятой машины обязано приводить к урону —
+            // даже если формальная дистанция чуть больше радиуса меча. Порог
+            // «касания» = 0.45 м: физический контакт двух тел с зазором/отталки-
+            // ванием почти никогда не даёт ровно 0, из-за чего прежнее условие
+            // (<= 0.1f) не срабатывало, а EffectiveStrikeRange для движущейся
+            // машины отставал — удар не наносился НИКОГДА.
+            bool occupiedCar = IsOccupiedVehicleTarget();
+            bool touchingCar = occupiedCar && strikeDistance <= 0.45f;
+
+            // Для занятой машины дополнительно: если робот реально касается её
+            // корпусных коллайдеров своим телом — это тоже «любое касание».
+            if (!touchingCar && occupiedCar) touchingCar = IsTouchingCarBody();
 
             if (!touchingCar && strikeDistance > EffectiveStrikeRange(Target)) return;
             if (Time.time < nextAttackTime) return;
@@ -290,6 +299,44 @@ namespace CarGame.Combat
             attackStopTimer = Mathf.Max(attackStopDuration, AttackStateLength());
             PlayAttack();
             Strike(Target, distance);
+        }
+
+        /// <summary>
+        /// Касается ли тело робота корпусной коллайдер занятой машины-цели
+        /// (Overlap по собственному габариту). Страховка против «не видно
+        /// касания» из-за физических зазоров: ClosestPoint может показывать
+        /// расстояние больше нуля там, где коллайдеры уже соприкасаются.
+        /// </summary>
+        private bool IsTouchingCarBody()
+        {
+            if (Target == null || Target.Equals(null)) return false;
+            CarController car = Target.GetComponentInParent<CarController>();
+            if (car == null) return false;
+
+            Collider[] bodies = car.BodyColliders;
+            if (bodies == null || bodies.Length == 0) return false;
+
+            Collider self = GetComponent<CapsuleCollider>();
+            Vector3 origin = FrontPosition + Vector3.up;
+            float probe = 0.3f;
+
+            for (int i = 0; i < bodies.Length; i++)
+            {
+                Collider body = bodies[i];
+                if (body == null || body.Equals(null) || !body.enabled) continue;
+
+                Vector3 closest = body.ClosestPoint(origin);
+                if (Vector3.Distance(origin, closest) <= probe) return true;
+
+                if (self != null)
+                {
+                    Vector3 selfClosest = self.ClosestPoint(body.bounds.center);
+                    if (Vector3.Distance(selfClosest, body.ClosestPoint(selfClosest)) <= 0.05f)
+                        return true;
+                }
+            }
+
+            return false;
         }
 
         private void UpdateAnimation(bool engaged)
@@ -580,7 +627,7 @@ namespace CarGame.Combat
         /// </summary>
         private bool IsOccupiedVehicleTarget()
         {
-            if (Target == null || !Target.IsCar) return false;
+            if (Target == null || Target.Equals(null)) return false;
 
             // Канонический признак занятости: CarController.IsOccupied (driver !=
             // null). Водитель ставится при EnterVehicle и снимается при выходе —
@@ -591,8 +638,17 @@ namespace CarGame.Combat
             // игрок официально сидит в ЭТОЙ машине (player.CurrentVehicle).
             PlayerController player = FindPlayer();
             if (player != null && !player.Equals(null) && player.IsInCar
-                && player.CurrentVehicle != null
-                && player.CurrentVehicle.Health == Target) return true;
+                && player.CurrentVehicle != null)
+            {
+                Health carHealth = player.CurrentVehicle.Health;
+                if (carHealth == Target) return true;
+
+                // Health цели может висеть на дочернем объекте машины, а
+                // CurrentVehicle.Health — на корне: сравниваем не ссылки, а
+                // принадлежность одной и той же машине.
+                CarController targetCar = Target.GetComponentInParent<CarController>();
+                if (targetCar != null && targetCar == player.CurrentVehicle) return true;
+            }
 
             return false;
         }
@@ -605,10 +661,11 @@ namespace CarGame.Combat
         private Vector3 ClosestCarPoint(Health target)
         {
             Vector3 origin = FrontPosition + Vector3.up;
-            if (target == null || !target.IsCar) return target != null ? target.transform.position : origin;
+            if (target == null || target.Equals(null)) return origin;
 
-            CarController car = target.GetComponent<CarController>();
-            if (car == null) car = target.GetComponentInParent<CarController>();
+            // CarController ищем строго вверх по иерархии: он живёт на корне
+            // машины, а Health цели может висеть на дочернем объекте.
+            CarController car = target.GetComponentInParent<CarController>();
 
             Collider[] bodies = car != null ? car.BodyColliders : null;
             if (bodies == null || bodies.Length == 0) return target.transform.position;
@@ -745,10 +802,9 @@ namespace CarGame.Combat
             // Для машины радиус удара увеличивается по габаритам КОРПУСА (все
             // коллайдеры кузова из CarController.BodyColliders), а не одного
             // первого найденного — иначе удар «не дотягивался» до капота/кормы.
-            if (target.IsCar)
+            if (target.IsCar || target.GetComponentInParent<CarController>() != null)
             {
-                CarController car = target.GetComponent<CarController>();
-                if (car == null) car = target.GetComponentInParent<CarController>();
+                CarController car = target.GetComponentInParent<CarController>();
                 if (car != null)
                 {
                     float reach = attackRange;
@@ -783,14 +839,17 @@ namespace CarGame.Combat
         private void Strike(Health target, float distance)
         {
             Vector3 origin = FrontPosition + Vector3.up;
-            Vector3 point = target.transform.position + Vector3.up;
+            Vector3 point = (target != null && !target.Equals(null))
+                ? target.transform.position + Vector3.up
+                : origin + transform.forward;
 
-            // Цель-машина (занятая или нет): бьём ВСЕГДА по ХП кузова, а не по
-            // водителю. Игрок в машине неуязвим и невидим — любой его Health
-            // TakeDamage проглотит молча. Точка удара — ближайшая точка корпуса.
-            CarController struckCar = target.GetComponent<CarController>();
-            if (struckCar == null) struckCar = target.GetComponentInParent<CarController>();
-
+            // Цель-машина (занятая или нет): бьём ВСЕГДА по ХП КУЗОВА, а не по
+            // переданной ссылке target. В сцене Health машины и Health водителя
+            // — разные компоненты; раньше при рассинхроне цели удар уходил в
+            // неуязвимый Health игрока (TakeDamage проглатывал его молча) либо
+            // в null — машина не получала урона никогда. Берём канонический
+            // Health из CarController (он сам создаст компонент, если тот пуст).
+            CarController struckCar = FindCar(target, origin);
             if (struckCar != null)
             {
                 Collider[] bodies = struckCar.BodyColliders;
@@ -809,10 +868,25 @@ namespace CarGame.Combat
                 if (bestDist < float.MaxValue) point = best + Vector3.up * 0.2f;
 
                 float carDamage = attackDamage * carDamageMultiplier;
-                Health carHealth = struckCar.Health != null ? struckCar.Health : target;
+                Health carHealth = struckCar.Health;
+                if (carHealth == null) return;
+
+                // Игрок за рулём неуязвим — но кузов нет. На всякий случай
+                // страхуемся: если carHealth вдруг оказался Health игрока
+                // (чужая разметка HpOwner), берём любой Health на корне машины.
+                if (carHealth.IsPlayer)
+                {
+                    carHealth = struckCar.GetComponent<Health>();
+                    if (carHealth == null || carHealth.IsPlayer)
+                        carHealth = struckCar.GetComponentInChildren<Health>();
+                }
+                if (carHealth == null) return;
+
                 carHealth.TakeDamage(new DamageInfo(carDamage, gameObject, point, (point - origin).normalized));
                 return;
             }
+
+            if (target == null || target.Equals(null)) return;
 
             // Пешая цель: прежняя проверка «бей не сквозь стену».
             if (Physics.Linecast(origin, point, out RaycastHit hit, ~0, QueryTriggerInteraction.Ignore)
@@ -821,6 +895,44 @@ namespace CarGame.Combat
                 return;
 
             target.TakeDamage(new DamageInfo(attackDamage, gameObject, point, (point - origin).normalized));
+        }
+
+        /// <summary>
+        /// Машина цели: сначала по ссылке Health (CarController всегда на её
+        /// корне или родителе), затем страховка — ближайшая непустая машина к
+        /// точке удара (OverlapSphere по габариту вокруг origin). Если цель
+        /// вообще не связана с машиной — вернёт null (пешая атака).
+        /// </summary>
+        private CarController FindCar(Health target, Vector3 origin)
+        {
+            if (target != null && !target.Equals(null))
+            {
+                CarController car = target.GetComponentInParent<CarController>();
+                if (car != null) return car;
+            }
+
+            // Страховка: цель — игрок, формально «в машине», но ссылка Health
+            // ведёт на объект вне иерархии авто. Тогда ищем машину физически —
+            // вокруг точки удара. Если рядом ничего нет, пробуем CurrentVehicle.
+            Collider[] nearby = Physics.OverlapSphere(origin, attackRange + 1.5f);
+            CarController best = null;
+            float bestDist = float.MaxValue;
+            for (int i = 0; i < nearby.Length; i++)
+            {
+                if (nearby[i] == null || nearby[i].Equals(null)) continue;
+                CarController car = nearby[i].GetComponentInParent<CarController>();
+                if (car == null) continue;
+                float d = Vector3.Distance(origin, nearby[i].ClosestPoint(origin));
+                if (d < bestDist) { bestDist = d; best = car; }
+            }
+            if (best != null && best.IsOccupied) return best;
+
+            PlayerController player = FindPlayer();
+            if (player != null && !player.Equals(null) && player.IsInCar
+                && player.CurrentVehicle != null)
+                return player.CurrentVehicle;
+
+            return best;
         }
 
         private void OnDied(Health dead)

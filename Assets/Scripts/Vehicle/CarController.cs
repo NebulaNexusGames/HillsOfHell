@@ -153,16 +153,28 @@ namespace CarGame.Vehicle
         public bool HeadlightsOn => headlightsOn;
 
         public PlayerController Driver => driver;
-        public Health Health => health;
+        /// <summary>
+        /// ХП кузова. Если на объекте машины компонент Health ещё не создан
+        /// (Awake не отработал) — создаём его принудительно. Раньше здесь
+        /// возвращался null, и боты (мечник) при ударе молча «били воздух»:
+        /// Strike брал пустую ссылку Health — TakeDamage не вызывался никогда.
+        /// </summary>
+        public Health Health
+        {
+            get
+            {
+                if (health == null || health.Equals(null))
+                {
+                    health = GetComponent<Health>();
+                    if (health == null) health = gameObject.AddComponent<Health>();
+                    if (maxHealth > 0.5f) health.Configure(maxHealth, Health.HpOwner.Car);
+                }
+                return health;
+            }
+        }
         public CargoZone Cargo => cargo;
 
-        /// <summary>
-        /// Коллайдеры корпуса машины (только не-триггеры). Нужны ботам: машина
-        /// с водителем — «приоритетная цель», и расстояние до неё считается по
-        /// поверхности корпуса, а не по центру. Иначе робот упирался в капот,
-        /// формально был далеко от центра Health и «бил воздух» без урона.
-        /// </summary>
-        public bool IsOccupied => driver != null;
+        public bool IsOccupied => driver != null && !driver.Equals(null);
         public bool IsSeated => seated;
         public bool IsTransitioning => transitioning;
         public float SteerInput => steer;
@@ -172,6 +184,12 @@ namespace CarGame.Vehicle
         public bool IsAirborne => wheels != null && wheels.Length > 0 && groundedWheels == 0;
         public Vector3 BalanceReference => balanceReference;
         public float TiltAngle => Vector3.Angle(transform.up, balanceReference);
+        /// <summary>
+        /// Коллайдеры корпуса машины (только не-триггеры). Нужны ботам: машина
+        /// с водителем — «приоритетная цель», и расстояние до неё считается по
+        /// поверхности корпуса, а не по центру. Иначе робот упирался в капот,
+        /// формально был далеко от центра Health и «бил воздух» без урона.
+        /// </summary>
         public Collider[] BodyColliders
         {
             get
