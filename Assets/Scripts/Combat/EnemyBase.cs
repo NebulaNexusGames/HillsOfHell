@@ -124,6 +124,10 @@ namespace CarGame.Combat
         // Плановая стоянка на маршруте / пауза. Читается в PatrolAllowsMove()
         // и CanMoveNow().
         protected float pauseUntil;
+        // Минимальная длительность плановой стоянки (сек). Подклассы могут
+        // переопределить: раньше это поле называлось patrolWaitUntil (оно было
+        // private — отсюда ошибка CS0122 в RobotSwordsman).
+        protected virtual float MinPatrolStop => 0f;
         private float lastSeenTime = -100f;
         // Последняя позиция цели, зафиксированная в момент захвата/видимости.
         // Используется при «памяти цели»: потеряв игрока из виду (за стеной),
@@ -888,7 +892,9 @@ namespace CarGame.Combat
         /// </summary>
         protected void BeginPatrolStop(float duration)
         {
-            pauseUntil = Time.time + Mathf.Max(0.1f, duration);
+            // Подкласс может задать минимальную длительность плановой стоянки,
+            // переопределив MinPatrolStop (мечник: отдых restDuration).
+            pauseUntil = Time.time + Mathf.Max(0.1f, duration, MinPatrolStop);
         }
 
         /// <summary>

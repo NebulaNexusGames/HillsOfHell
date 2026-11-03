@@ -1026,6 +1026,7 @@ GameObject:
   - component: {fileID: 917958362691522882}
   - component: {fileID: 2444545356843522034}
   - component: {fileID: 4239960203685974670}
+  - component: {fileID: 1008166848422248098}
   m_Layer: 0
   m_Name: SwordBot
   m_TagString: Untagged

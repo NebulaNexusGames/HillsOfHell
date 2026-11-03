@@ -169,6 +169,14 @@ namespace CarGame.Combat
         /// сериализованное значение loseTargetMemory из префаба.</summary>
         protected override float LoseTargetMemoryOverride => targetMemoryDuration;
 
+        /// <summary>Плановая передышка на маршруте — restDuration секунд
+        /// (поле базового класса). По ТЗ цикл патруля:Walk → Idle(передышка)
+        /// → Walk; раньше стоянка была жёстко ~1 с и не читалась из настроек.</summary>
+        protected override float MinPatrolStop => PatrolWaitTimeField;
+
+        /// <summary>Время передышки патруля (restDuration patrolWaitTime).</summary>
+        private float PatrolWaitTimeField => patrolRestSeconds;
+
         private void ApplyBloodMoonBuffs()
         {
             maxHealth *= BloodMoonHealthMultiplier;
