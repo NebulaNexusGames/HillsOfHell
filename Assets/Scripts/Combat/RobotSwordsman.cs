@@ -7,6 +7,7 @@ namespace CarGame.Combat
     [RequireComponent(typeof(Health))]
     [RequireComponent(typeof(CapsuleCollider))]
     [RequireComponent(typeof(Rigidbody))]
+    [RequireComponent(typeof(AudioSource))]
     [DisallowMultipleComponent]
     public class RobotSwordsman : EnemyBase
     {
@@ -21,6 +22,12 @@ namespace CarGame.Combat
         [SerializeField] private float attackRange = 2.1f;
         [Tooltip("Урон за удар по игроку")]
         [SerializeField] private float attackDamage = 11f;
+        [Tooltip("Интервал между ударами, с")]
+        [SerializeField] private float attackCooldown = 1.1f;
+        [Tooltip("Скорость цели (по смещению трансформации), ниже которой она \"стоит\" и мечник тоже встаёт, м/с")]
+        [SerializeField] private float targetStillSpeed = 0.35f;
+        [Tooltip("Скорость цели, выше которой она снова \"движется\" и погоня продолжается, м/с")]
+        [SerializeField] private float targetMovingSpeed = 0.6f;
         [Tooltip("Множитель урона, если цель — машина")]
         [SerializeField] private float carDamageMultiplier = 1.4f;
         [Tooltip("Сколько секунд робот стоит неподвижно ПОСЛЕ КАЖДОГО реального удара " +
@@ -29,19 +36,21 @@ namespace CarGame.Combat
         [SerializeField] private float attackStopDuration = 2f;
 
         [Header("Смерть")]
-        [Tooltip("Анимация тряски перед смертью. Имя состояния в Animator (или имя клипа). " +
-                 "Пусто — поиск состояния с именем Shake / ShakeDeath; если такого нет, " +
-                 "робот затрясётся программно (тряска трансформацииModel)")]
-        [SerializeField] private string shakeState = "Shake";
-        [Tooltip("Длительность тряски перед взрывом, с")]
-        [SerializeField] private float shakeDuration = 0.7f;
-        [Tooltip("Префаб эффекта взрыва. Создаётся на месте робота сразу после тряски " +
-                 "(по образцу DinamiteBot: Assets/Prefabs/Effects/Explosion.prefab)")]
+        [Tooltip("Булев параметр Animator, запускающий лупнутую анимацию смерти " +
+                 "(тряску). Пока она играется и идёт таймер до взрыва, робот не двигается. " +
+                 "В SwordBot.controller это параметр \"Die\" (Bool)")]
+        [SerializeField] private string dieParameter = "Die";
+        [Tooltip("Таймер от запуска анимации смерти до взрыва, с. Всё это время " +
+                 "робот трясётся (луп анимации) и стоит на месте")]
+        [SerializeField] private float deathExplodeDelay = 1.5f;
+        [Tooltip("Префаб взрыва. Создаётся на месте робота по истечении таймера смерти, " +
+                 "сам робот при этом удаляется " +
+                 "(Assets/Prefabs/Effects/Explosion.prefab)")]
         [SerializeField] private GameObject explosionPrefab;
-        [Tooltip("Звук сигнализации перед смертью (соответствующий сигнал). Если пусто — " +
-                 "процедурный звук тревоги")]
-        [SerializeField] private AudioClip deathAlertSound;
-        [Tooltip("Звук тряски (дребезг металла). Если пусто — процедурный ShakeRattle")]
+        [Tooltip("Звук смерти робота — проигрывается ОДИН РАЗ в начале таймера до взрыва")]
+        [SerializeField] private AudioClip deathSound;
+        [Tooltip("Звук тряски — проигрывается на постоянной основе (в цикле) всё время " +
+                 "пока идет таймер до взрыва. Если пусто — процедурный ShakeRattle")]
         [SerializeField] private AudioClip shakeSound;
         [Tooltip("Проигрывать звуки смерти")]
         [SerializeField] private bool playDeathSound = true;
@@ -86,6 +95,18 @@ namespace CarGame.Combat
         private string currentState;
         private float attackLockTime;
         private float attackStopTimer;
+
+        // ===== СМЕРТЬ (состояние Death) =====
+        // Робот умер: включена лупнутая анимация смерти (Bool-параметр
+        // dieParameter в Animator), робот НЕ двигается, идёт таймер
+        // deathExplodeDelay. По истечении — взрыв (спавн explosionPrefab на
+        // месте робота, сам робот удаляется) и спавн лута.
+        private bool dying;
+        // Момент смерти (Time.time). Таймер до взрыва считается от него.
+        private float deathTime;
+        // Источник звука тряски: loop = true, играет всё время пока робот
+        // трясётся перед взрывом.
+        private AudioSource deathRattleSource;
         // Сколько ударов РЕАЛЬНО дошло до цели за время жизни робота. Нужно,
         // чтобы отличить «холостую» атаку сразу после спавна (цель далеко,
         // замах по воздуху) от настоящего боя: пост-ударная 2-секундная
@@ -202,6 +223,15 @@ namespace CarGame.Combat
         private void Update()
         {
             if (health == null || health.IsDead) return;
+
+            // Состояние Death: робот умер и трясётся в лупнутой анимации
+            // смерти. Он НЕ двигается, НЕ атакует, НЕ обновляет ИИ — только
+            // тикает таймер до взрыва (звук тряски крутится сам через loop).
+            if (dying)
+            {
+                UpdateDeathTimer();
+                return;
+            }
 
             BaseUpdate();
 
@@ -924,11 +954,6 @@ namespace CarGame.Combat
             if (HasParameter(parameter)) animator.SetFloat(parameter, value);
         }
 
-        private void FireTrigger(string parameter)
-        {
-            if (HasParameter(parameter)) animator.SetTrigger(parameter);
-        }
-
         /// <summary>
         /// Гасит pending-триггер атаки. Нужен для принудительного выхода из
         /// состояния Attack: если триггер остался неподхваченным, следующий же
@@ -1123,36 +1148,105 @@ namespace CarGame.Combat
             return best;
         }
 
+        /// <summary>
+        /// Момент смерти. Переход в состояние Death: включается лупнутая
+        /// анимация тряски (Bool-параметр Animator dieParameter), робот
+        /// останавливается, один раз играет звук смерти и по кругу — звук
+        /// тряски. По истечении deathExplodeDelay робот взрывается: на его
+        /// месте создаётся префаб взрыва, спавнится лут, сам робот удаляется.
+        /// </summary>
         private void OnDied(Health dead)
         {
-            FireTrigger("Dead");
-            SetBool("Attacking", false);
-            SetBool("InCombat", false);
+            if (dying) return;
+            dying = true;
+            deathTime = Time.time;
 
-            DropLoot();
-
-            PlayDeathSound();
-
+            // Робот замирает: гасим скорость и блокируем движение до самого
+            // взрыва (Update в состоянии Death всё равно его не трогает).
             if (body != null) body.linearVelocity = Vector3.zero;
+            LockMovement(Mathf.Max(deathExplodeDelay, 10f));
 
-            Destroy(gameObject, 0.1f);
+            // Запуск лупнутой анимации смерти булевым параметром. Остальные
+            // состояния-флаги (Idle/Walk/Run) гасим, иначе переход в смерть
+            // может не сработать или аниматор вернёт робота в бег.
+            if (animator != null && !string.IsNullOrEmpty(dieParameter))
+            {
+                ResetOtherStateBools(null);
+                if (GetParameterType(dieParameter) == AnimatorControllerParameterType.Bool)
+                    animator.SetBool(dieParameter, true);
+                else
+                    animator.SetTrigger(dieParameter);
+            }
+
+            PlayDeathSounds();
         }
 
         /// <summary>
-        /// Мечник не взрывается: на его месте не должно быть опасной зоны урона.
-        /// Гибель обозначается только звуком, после чего робот разлетается на лут.
+        /// Таймер состояния Death: ждём deathExplodeDelay секунд, затем взрыв.
         /// </summary>
-        private void PlayDeathSound()
+        private void UpdateDeathTimer()
+        {
+            if (Time.time - deathTime < deathExplodeDelay) return;
+            Explode();
+        }
+
+        /// <summary>
+        /// Взрыв по завершении таймера смерти: удаление самого робота и
+        /// появление на его месте префаба взрыва + спавн лута.
+        /// </summary>
+        private void Explode()
+        {
+            if (!dying) return;
+            dying = false;
+
+            StopDeathRattle();
+            DropLoot();
+
+            if (explosionPrefab != null)
+            {
+                GameObject effect = Instantiate(explosionPrefab, transform.position, Quaternion.identity);
+
+                // Страховка: если эффект урона по площади, он не должен
+                // «убить» уже удаляемый объект (образец DinamiteBot).
+                ExplosionEffect explosion = effect != null ? effect.GetComponent<ExplosionEffect>() : null;
+                if (explosion != null) explosion.Ignore(gameObject);
+            }
+
+            Destroy(gameObject);
+        }
+
+        /// <summary>
+        /// Звуки начала состояния Death: ОДИН РАЗ звук смерти робота +
+        /// зацикленный звук тряски, который крутится всё время пока идёт
+        /// таймер до взрыва.
+        /// </summary>
+        private void PlayDeathSounds()
         {
             if (!playDeathSound) return;
 
-            if (deathSound != null)
-            {
-                AudioSource.PlayClipAtPoint(deathSound, transform.position, deathSoundVolume);
-                return;
-            }
+            // Клик смерти: свой клип из инспектора, иначе процедурный взрыв.
+            AudioClip deathClip = deathSound != null ? deathSound : CarGame.Audio.ProceduralAudio.Explosion();
+            AudioSource.PlayClipAtPoint(deathClip, transform.position, deathSoundVolume);
 
-            Explosion.PlayFallbackSound(transform.position, deathSoundVolume);
+            // Тряска: loop-источник на самом роботе (пока тот жив). Клип —
+            // свой из инспектора, иначе процедурный ShakeRattle.
+            AudioClip rattle = shakeSound != null ? shakeSound : CarGame.Audio.ProceduralAudio.ShakeRattle();
+            if (rattle == null) return;
+
+            deathRattleSource = gameObject.AddComponent<AudioSource>();
+            deathRattleSource.clip = rattle;
+            deathRattleSource.loop = true;
+            deathRattleSource.playOnAwake = false;
+            deathRattleSource.spatialBlend = 1f;
+            deathRattleSource.volume = deathSoundVolume;
+            deathRattleSource.Play();
+        }
+
+        private void StopDeathRattle()
+        {
+            if (deathRattleSource == null) return;
+            deathRattleSource.Stop();
+            deathRattleSource = null;
         }
 
         private void DropLoot()
