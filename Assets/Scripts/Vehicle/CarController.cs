@@ -194,8 +194,34 @@ namespace CarGame.Vehicle
         {
             get
             {
-                if (bodyColliders != null && bodyColliders.Length > 0) return bodyColliders;
-                return bodyCollidersCache ?? (bodyCollidersCache = FindBodyColliders());
+                // ВАЖНО: назначенный в инспекторе массив может содержать ссылки на
+                // объекты, которые позже были уничтожены (например, Health игрока
+                // со старым owner=Car). Такие «мёртвые» ссылки не равны null —
+                // они == null только через перегрузку UnityEngine.Object. Прежний
+                // код возвращал этот массив как есть, боты получали пустой набор
+                // живых коллайдеров и никогда не наносили машине урон. Поэтому
+                // сначала чистим массив от мёртвых/триггерных записей.
+                if (bodyColliders != null && bodyColliders.Length > 0)
+                {
+                    int alive = 0;
+                    for (int i = 0; i < bodyColliders.Length; i++)
+                    {
+                        Collider collider = bodyColliders[i];
+                        if (collider == null || collider.Equals(null) || collider.isTrigger) continue;
+                        bodyColliders[alive++] = collider;
+                    }
+
+                    if (alive > 0)
+                    {
+                        if (alive != bodyColliders.Length)
+                            System.Array.Resize(ref bodyColliders, alive);
+                        return bodyColliders;
+                    }
+                }
+
+                if (bodyCollidersCache == null || bodyCollidersCache.Length == 0)
+                    bodyCollidersCache = FindBodyColliders();
+                return bodyCollidersCache;
             }
         }
         public float SpeedMs => body != null ? Vector3.Dot(FrontDirection, body.linearVelocity) : 0f;
