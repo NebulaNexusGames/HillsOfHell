@@ -117,7 +117,9 @@ namespace CarGame.Combat
         }
 
         private Transform currentPatrolPoint;
-        private float patrolWaitUntil => pauseUntil;
+        // protected: наследники (RobotSwordsman) читают это для выбора
+        // состояния анимации на патруле (Walk до паузы / Idle во время паузы).
+        protected float patrolWaitUntil => pauseUntil;
         // До этого момента робот обязан стоять (замах атаки). Ставится через
         // LockMovement(), читается в CanMoveNow().
         protected float attackLockUntil;
