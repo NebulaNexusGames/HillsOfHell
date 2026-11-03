@@ -1141,6 +1141,7 @@ MonoBehaviour:
   rememberTargetWhenLost: 1
   sightAngleDegrees: 120
   nearDetectionRadius: 8
+  targetAwarenessRadius: 12
   requireReachableTarget: 1
   targetHeightOffset: 1
   maxTargetHeight: 6
@@ -1172,26 +1173,27 @@ MonoBehaviour:
   slopeProbeDistance: 1.6
   slopeProbeHeight: 2.5
   stepUpHeight: 0.35
-  stuckSpeed: 0.4
-  stuckDelay: 0.7
+  stuckSpeed: 0.3
+  stuckDelay: 0.3
   detourDuration: 1.3
   maxHealth: 60
   moveSpeed: 3.6
   turnSpeed: 420
-  attackRange: 2.1
+  attackRange: 3
   attackDamage: 11
-  carDamageMultiplier: 1.4
   attackCooldown: 1.1
+  carDamageMultiplier: 1.4
   attackStopDuration: 2
-  targetStillSpeed: 0.35
-  targetMovingSpeed: 0.6
-  deathSound: {fileID: 0}
+  dieParameter: Die
+  deathExplodeDelay: 10
+  explosionPrefab: {fileID: 5316626115453355477, guid: 77450e5255e83d549b294f418ebf06f6, type: 3}
+  deathSound: {fileID: 8300000, guid: 5f271bba2e2d94745a36798d4c8532e0, type: 3}
+  shakeSound: {fileID: 8300000, guid: 878fc179faa977345894493f62abdef3, type: 3}
   playDeathSound: 1
   deathSoundVolume: 1
   animator: {fileID: 576777897269433724}
   animateStrike: 1
   crossFade: 0.12
-  walkThreshold: 0.25
   idleState: Idle
   walkState: Walk
   runState: Run
@@ -1206,7 +1208,6 @@ MonoBehaviour:
     countMin: 1
     countMax: 3
   scatterRadius: 0.5
-  chaseGiveUpTime: 3
   stepSound: {fileID: 8300000, guid: f16105201404fd942b37c0670ea71f09, type: 3}
   alertSound: {fileID: 8300000, guid: a643cd8d6f0423b43bf5c160f262abf0, type: 3}
   stepVolume: 0.35
