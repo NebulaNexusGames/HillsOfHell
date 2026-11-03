@@ -184,7 +184,7 @@ namespace CarGame.Combat
         /// Маркер «Приоритетная цель»: машина, в которой сидит игрок. Игрок за
         /// рулём неуязвим и для ботов НЕВИДИМ — атаковать нужно именно машину.
         /// </summary>
-        public bool IsPriorityCarTarget => Target != null && Target.IsCar && IsTargetOccupied(Target);
+        public bool IsPriorityCarTarget => Target != null && IsTargetOccupied(Target);
 
         /// <summary>
         /// Занята ли машина-цель игроком. Определяется по CarController.Driver:
@@ -193,10 +193,17 @@ namespace CarGame.Combat
         /// </summary>
         protected static bool IsTargetOccupied(Health candidate)
         {
-            if (candidate == null || candidate.Equals(null) || !candidate.IsCar) return false;
+            if (candidate == null || candidate.Equals(null)) return false;
 
-            CarController car = candidate.GetComponent<CarController>();
-            if (car == null) car = candidate.GetComponentInParent<CarController>();
+            // CarController висит на КОРНЕ машины, а Health цели в сцене может
+            // сидеть на любом дочернем объекте — GetComponent() искал бы только
+            // на одном и том же объекте и молча возвращал false. Из-за этого
+            // «приоритетная цель» не распознавалась, мечник продолжал бегать за
+            // невидимым водителем и никогда не бил саму машину. Ищем строго
+            // вверх по иерархии — это канонический способ (так же делают
+            // WrenchItem, Hitscan, BuildItem). Никаких GetComponentsInChildren:
+            // иначе случайный дочерний триггер/предмет давал бы ложную занятость.
+            CarController car = candidate.GetComponentInParent<CarController>();
             if (car == null) return false;
 
             return car.IsOccupied;
@@ -212,26 +219,65 @@ namespace CarGame.Combat
         {
             if (candidate == null || candidate.Equals(null)) return float.MaxValue;
 
+            // Машина: расстояние до ПОВЕРХНОСТИ корпуса. Коллайдеры ищем через
+            // CarController (он на корне машины), а не через GetComponent на
+            // объекте Health — иначе для дочернего Health возвращался центр
+            // модели и мечник «не дотягивался» до капота.
+            CarController car = candidate.GetComponentInParent<CarController>();
+            if (car != null)
+            {
+                Collider[] colliders = car.BodyColliders;
+                float best = float.MaxValue;
+                bool any = false;
+                if (colliders != null)
+                {
+                    for (int i = 0; i < colliders.Length; i++)
+                    {
+                        Collider col = colliders[i];
+                        if (col == null || col.Equals(null) || !col.enabled) continue;
+                        any = true;
+                        float d = Vector3.Distance(from, col.ClosestPoint(from));
+                        if (d < best) best = d;
+                    }
+                }
+
+                // Корпусных коллайдеров нет (машина-чертёж без кузова) — хотя бы
+                // не центр модели: берём габариты всех непустых коллайдеров.
+                if (!any)
+                {
+                    Bounds bounds = new Bounds(candidate.transform.position, Vector3.zero);
+                    bool hasBounds = false;
+                    Collider[] all = candidate.GetComponentsInChildren<Collider>();
+                    for (int i = 0; i < all.Length; i++)
+                    {
+                        if (all[i] == null || all[i].Equals(null)) continue;
+                        if (!hasBounds) { bounds = all[i].bounds; hasBounds = true; }
+                        else bounds.Encapsulate(all[i].bounds);
+                    }
+                    if (hasBounds)
+                    {
+                        Vector3 closest = bounds.ClosestPoint(from);
+                        return Vector3.Distance(from, closest);
+                    }
+                }
+
+                return best < float.MaxValue ? best : Vector3.Distance(from, candidate.transform.position);
+            }
+
             if (!candidate.IsCar)
                 return Vector3.Distance(from, candidate.transform.position);
 
-            CarController car = candidate.GetComponent<CarController>();
-            if (car == null) car = candidate.GetComponentInParent<CarController>();
-
-            Collider[] colliders = car != null ? car.BodyColliders : null;
-            if (colliders == null || colliders.Length == 0)
-                return Vector3.Distance(from, candidate.transform.position);
-
-            float best = float.MaxValue;
-            for (int i = 0; i < colliders.Length; i++)
+            Collider[] fallbackColliders = candidate.GetComponentsInChildren<Collider>();
+            float fbBest = float.MaxValue;
+            for (int i = 0; i < fallbackColliders.Length; i++)
             {
-                Collider col = colliders[i];
+                Collider col = fallbackColliders[i];
                 if (col == null || col.Equals(null) || !col.enabled) continue;
                 float d = Vector3.Distance(from, col.ClosestPoint(from));
-                if (d < best) best = d;
+                if (d < fbBest) fbBest = d;
             }
 
-            return best < float.MaxValue ? best : Vector3.Distance(from, candidate.transform.position);
+            return fbBest < float.MaxValue ? fbBest : Vector3.Distance(from, candidate.transform.position);
         }
 
         /// <summary>Последняя виденная позиция цели (для преследования «по памяти»).
@@ -533,7 +579,10 @@ namespace CarGame.Combat
             // стоять вплотную к капоту, но формально быть в 6+ метрах от центра.
             // Поэтому для целей-машин дополнительно проверяем расстояние до
             // ближайшей точки их коллайдеров — зона «прилегает» к корпусу.
-            if (candidate.IsCar)
+            // Признак машины — CarController на объекте/родителе, а НЕ разметка
+            // HpOwner.Car: в сцене Health машины может быть не помечен как Car,
+            // из-за чего зона обнаружения вокруг корпуса не работала.
+            if (candidate.GetComponentInParent<CarController>() != null || candidate.IsCar)
             {
                 Collider[] carColliders = candidate.GetComponentsInChildren<Collider>();
                 for (int i = 0; i < carColliders.Length; i++)
