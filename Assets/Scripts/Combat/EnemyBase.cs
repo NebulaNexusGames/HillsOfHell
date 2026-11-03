@@ -974,6 +974,19 @@ namespace CarGame.Combat
                 return false;
             }
 
+            // ВАЖНО: проверка выше использует obstacleMask. Если машина-цель не
+            // входит в этот слой, она НЕ считается препятствием здесь — но ниже
+            // detour всё равно включался, если робот упёрся в кузов физически.
+            // Для занятой машины объезд по стене недопустим: бот обязан идти
+            // ПРЯМО на неё и бить корпус. Отсекаем слайд, если «нормаль контакта»
+            // исходит от коллайдера текущей цели (проверка симметрична IsTargetCollider).
+            if (Target != null && !Target.Equals(null)
+                && IsCarColliderOfTarget(contactSourceCandidate))
+            {
+                result = forward;
+                return false;
+            }
+
             detourDirection = (along - normal * Vector3.Dot(along, normal)).normalized;
             if (detourDirection.sqrMagnitude < 0.0001f) detourDirection = along;
 
@@ -983,6 +996,20 @@ namespace CarGame.Combat
 
             return true;
         }
+
+        /// <summary>
+        /// Коллайдер-«блокировщик» из последнего свипа принадлежит машине-цели?
+        /// Используется, чтобы мечник не уходил в объезд кузова занятой машины.
+        /// </summary>
+        private bool IsCarColliderOfTarget(Collider candidate)
+        {
+            if (candidate == null || candidate.Equals(null)) return false;
+            return IsTargetCollider(candidate);
+        }
+
+        // Поле хранит последний коллайдер, вызвавший блокировку при просчёте
+        // направления (заполняется в Sweep через BlockingCollider).
+        private Collider contactSourceCandidate => BlockingCollider;
 
         private void StartReversal()
         {
@@ -1160,7 +1187,34 @@ namespace CarGame.Combat
             if (candidate == null || Target == null) return false;
 
             Transform hit = candidate.transform;
-            return hit == Target.transform || hit.IsChildOf(Target.transform);
+            if (hit == Target.transform || hit.IsChildOf(Target.transform)) return true;
+
+            // Машина-цель: её Health висит на одном объекте иерархии, а корпусные
+            // коллайдеры — на десятке детей (двери, капот, багажник, крыша...).
+            // Прежняя проверка по «ребёнок ли ты объекта Target» помечала эти
+            // коллайдеры как препятствия: робот начинал ОБХОДИТЬ машину, к которой
+            // сам бежит («упирается в другую часть кузова», «не атакует багажник»,
+            // «подходит к двери и обходит»). Теперь любой непустой триггерный или
+            // физический коллайдер, принадлежащий той же машине, что и цель, —
+            // это часть цели, а не стена. Определяем принадлежность через
+            // CarController: он всегда на корне машины (GetComponentInParent).
+            if (IsTargetVehicleCollider(candidate)) return true;
+
+            return false;
+        }
+
+        /// <summary>
+        /// Коллайдер принадлежит машине, которая является текущей целью?
+        /// </summary>
+        private bool IsTargetVehicleCollider(Collider candidate)
+        {
+            if (Target == null || Target.Equals(null)) return false;
+
+            CarController targetCar = Target.GetComponentInParent<CarController>();
+            if (targetCar == null) return false;
+
+            CarController candidateCar = candidate.GetComponentInParent<CarController>();
+            return candidateCar != null && candidateCar == targetCar;
         }
 
         private float GroundLevel => transform.position.y;
@@ -1329,6 +1383,17 @@ namespace CarGame.Combat
         protected float StuckSpeedValue => stuckSpeed;
         protected float StuckDelayValue => stuckDelay;
         protected bool IsDetourActive => detourActive;
+
+        /// <summary>
+        /// Принудительно выключает режим обхода препятствия. Нужен мечнику: пока
+        /// цель — занятая машина, никакой объезд не допускается (робот обязан
+        /// идти прямо на кузов и бить). Вызывается из RobotSwordsman.Update.
+        /// </summary>
+        protected void CancelDetour()
+        {
+            detourActive = false;
+            detourTimer = 0f;
+        }
 
         protected static PlayerController FindPlayer()
         {

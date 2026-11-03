@@ -230,13 +230,22 @@ namespace CarGame.Combat
             // иначе ComputeAvoidance начинает её обходить вместо атаки. Пустая
             // машина остаётся препятствием и обходится штатно (по требованию).
             bool chargeOccupiedCar = engaged && IsOccupiedVehicleTarget();
+
+            // Страховка от «залипания» объезда: робот мог войти в detour ещё до
+            // посадки игрока в машину (пустое авто = препятствие) или из-за
+            // случайного контакта с дверью/крылом. Пока цель — занятая машина,
+            // никакого облёта быть не должно: сбрасываем активный обход и идём
+            // прямо на кузов. Иначе мечник «обходит машину у двери» и «упирается
+            // в низкую часть кузова», как описано в ТЗ.
+            if (chargeOccupiedCar && IsDetourActive) CancelDetour();
+
             if (chargeOccupiedCar)
             {
                 // Машина крупная: центр корпуса далеко, а бить надо по капоту.
                 // Перенацеливаемся на БЛИЖАЙШУЮ ТОЧКУ ПОВЕРХНОСТИ кузова — иначе
                 // робот останавливался в метрах от машины («не мог попасть»).
                 float surface = SurfaceDistanceTo(FrontPosition + Vector3.up, Target);
-                if (surface > attackRange)
+                if (surface > attackRange * 0.6f)
                 {
                     Vector3 toSurface = ClosestCarPoint(Target) - FrontPosition;
                     toSurface.y = 0f;
@@ -278,18 +287,28 @@ namespace CarGame.Combat
 
             // По ТЗ: ЛЮБОЕ касание занятой машины обязано приводить к урону —
             // даже если формальная дистанция чуть больше радиуса меча. Порог
-            // «касания» = 0.45 м: физический контакт двух тел с зазором/отталки-
-            // ванием почти никогда не даёт ровно 0, из-за чего прежнее условие
-            // (<= 0.1f) не срабатывало, а EffectiveStrikeRange для движущейся
-            // машины отставал — удар не наносился НИКОГДА.
+            // «касания» = 1.2 м (существенно больше attackRange): робот физически
+            // не может встать ближе метра к крупному кузову (отталкивание
+            // коллайдеров), поэтому прежний порог 0.45 м не срабатывал НИКОГДА —
+            // анимация замаха играла, а урон не наносился («бьёт, но не дамажит»,
+            // «не трогает багажник»). Теперь: если машина-цель в пределах длины
+            // меча от носовой точки робота — удар засчитывается по поверхности.
             bool occupiedCar = IsOccupiedVehicleTarget();
-            bool touchingCar = occupiedCar && strikeDistance <= 0.45f;
+            bool touchingCar = occupiedCar && strikeDistance <= Mathf.Max(1.2f, attackRange);
 
             // Для занятой машины дополнительно: если робот реально касается её
             // корпусных коллайдеров своим телом — это тоже «любое касание».
             if (!touchingCar && occupiedCar) touchingCar = IsTouchingCarBody();
 
-            if (!touchingCar && strikeDistance > EffectiveStrikeRange(Target)) return;
+            // Если цель — машина вообще (занятая или нет), обычная проверка
+            // EffectiveStrikeRange НЕ должна блокировать удар: дистанция до
+            // центра кузова легко превышает радиус меча, и раньше удар просто
+            // не проходил дальше капота. Бьём машину всегда, когда дотянулись
+            // до любой точки её корпуса.
+            bool carTarget = occupiedCar || (Target != null && !Target.Equals(null)
+                && Target.GetComponentInParent<CarController>() != null);
+            if (!touchingCar && !carTarget && strikeDistance > EffectiveStrikeRange(Target)) return;
+            if (!touchingCar && carTarget && strikeDistance > Mathf.Max(attackRange + 1f, EffectiveStrikeRange(Target))) return;
             if (Time.time < nextAttackTime) return;
 
             nextAttackTime = Time.time + attackCooldown;
