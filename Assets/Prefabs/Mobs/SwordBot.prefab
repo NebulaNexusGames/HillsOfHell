@@ -1183,6 +1183,7 @@ MonoBehaviour:
   attackRange: 2.1
   attackDamage: 11
   attackCooldown: 1.1
+<<<<<<< HEAD
   targetStillSpeed: 0.35
   targetMovingSpeed: 0.6
   carDamageMultiplier: 1.4
@@ -1192,12 +1193,19 @@ MonoBehaviour:
   explosionPrefab: {fileID: 5316626115453355477, guid: 77450e5255e83d549b294f418ebf06f6, type: 3}
   deathSound: {fileID: 8300000, guid: 5f271bba2e2d94745a36798d4c8532e0, type: 3}
   shakeSound: {fileID: 8300000, guid: 878fc179faa977345894493f62abdef3, type: 3}
+=======
+  attackStopDuration: 2
+  dieParameter: Die
+  deathExplodeDelay: 1.5
+  explosionPrefab: {fileID: 5316626115453355477, guid: 77450e5255e83d549b294f418ebf06f6, type: 3}
+  shakeSound: {fileID: 0}
+  deathSound: {fileID: 0}
+>>>>>>> 3ad20118012290e8b8b7565ff3c7cee732a70cb7
   playDeathSound: 1
   deathSoundVolume: 1
   animator: {fileID: 576777897269433724}
   animateStrike: 1
   crossFade: 0.12
-  walkThreshold: 0.25
   idleState: Idle
   walkState: Walk
   runState: Run
@@ -1212,7 +1220,6 @@ MonoBehaviour:
     countMin: 1
     countMax: 3
   scatterRadius: 0.5
-  chaseGiveUpTime: 3
   stepSound: {fileID: 8300000, guid: f16105201404fd942b37c0670ea71f09, type: 3}
   alertSound: {fileID: 8300000, guid: a643cd8d6f0423b43bf5c160f262abf0, type: 3}
   stepVolume: 0.35
