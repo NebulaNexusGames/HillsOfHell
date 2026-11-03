@@ -23,22 +23,29 @@ namespace CarGame.Combat
         [SerializeField] private float attackDamage = 11f;
         [Tooltip("Множитель урона, если цель — машина")]
         [SerializeField] private float carDamageMultiplier = 1.4f;
-        [Tooltip("Пауза между ударами, с")]
-        [SerializeField] private float attackCooldown = 1.1f;
-        [Tooltip("Сколько секунд робот стоит неподвижно после каждого удара (по ТЗ — 2 с).")]
+        [Tooltip("Сколько секунд робот стоит неподвижно ПОСЛЕ КАЖДОГО реального удара " +
+                 "(по ТЗ — 2 с). Это же значение является паузой между ударами: следующий " +
+                 "замах начинается сразу по окончании стойки.")]
         [SerializeField] private float attackStopDuration = 2f;
-        [Tooltip("Если цель стоит на месте (смещается меньше этого порога, м/с), мечник тоже " +
-                 "не двигается и не начинает новый замах, пока цель не сдвинется. 0 — отключено")]
-        [SerializeField] private float targetStillSpeed = 0.35f;
-        [Tooltip("Скорость цели выше этой считается «цель движется» — блокировка снимается")]
-        [SerializeField] private float targetMovingSpeed = 0.6f;
 
         [Header("Смерть")]
-        [Tooltip("Звук гибели. Если пусто, будет использован встроенный процедурный звук")]
-        [SerializeField] private AudioClip deathSound;
-        [Tooltip("Проигрывать звук при смерти")]
+        [Tooltip("Анимация тряски перед смертью. Имя состояния в Animator (или имя клипа). " +
+                 "Пусто — поиск состояния с именем Shake / ShakeDeath; если такого нет, " +
+                 "робот затрясётся программно (тряска трансформацииModel)")]
+        [SerializeField] private string shakeState = "Shake";
+        [Tooltip("Длительность тряски перед взрывом, с")]
+        [SerializeField] private float shakeDuration = 0.7f;
+        [Tooltip("Префаб эффекта взрыва. Создаётся на месте робота сразу после тряски " +
+                 "(по образцу DinamiteBot: Assets/Prefabs/Effects/Explosion.prefab)")]
+        [SerializeField] private GameObject explosionPrefab;
+        [Tooltip("Звук сигнализации перед смертью (соответствующий сигнал). Если пусто — " +
+                 "процедурный звук тревоги")]
+        [SerializeField] private AudioClip deathAlertSound;
+        [Tooltip("Звук тряски (дребезг металла). Если пусто — процедурный ShakeRattle")]
+        [SerializeField] private AudioClip shakeSound;
+        [Tooltip("Проигрывать звуки смерти")]
         [SerializeField] private bool playDeathSound = true;
-        [Tooltip("Громкость звука гибели")]
+        [Tooltip("Громкость звуков гибели")]
         [SerializeField] private float deathSoundVolume = 1f;
 
         [Header("Аниматор")]
