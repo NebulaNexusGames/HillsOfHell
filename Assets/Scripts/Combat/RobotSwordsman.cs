@@ -4,10 +4,35 @@ using UnityEngine;
 
 namespace CarGame.Combat
 {
+    /// <summary>
+    /// Робот-мечник. Поведение строго по ТЗ:
+    ///
+    /// РЕЖИМ 1 — ПАТРУЛЬ (цели нет):
+    ///   1) идёт к точке маршрута в анимации Walk;
+    ///   2) дошёл — останавливается на передышку в анимации Idle;
+    ///   3) отдохнул — снова пункт 1.
+    ///
+    /// РЕЖИМ 2 — ПРЕСЛЕДОВАНИЕ (цель есть):
+    ///   просто бежит за игроком (анимация Run), без остановок и без «сдачи».
+    ///   Порядок действий атаки:
+    ///   1) сократил дистанцию до радиуса удара — останавливается и бьёт
+    ///      (анимация Attack, урон наносится в момент замаха);
+    ///   2) после удара стоит на месте в анимации Idle ровно attackStopDuration
+    ///      секунд (по ТЗ — 2 с);
+    ///   3) игрок ушёл — продолжает догонять (Run), пока не сократит дистанцию
+    ///      для нового удара; игрок остался на месте — по окончании стойки
+    ///      сразу возвращается к пункту 1 и бьёт снова.
+    ///
+    /// СОСТОЯНИЕ 3 — DEATH:
+    ///   смерть запускает лупнутую анимацию тряски булевым параметром
+    ///   Animator (dieParameter). Робот не двигается, один раз играет звук
+    ///   смерти и всё это время крутит зацикленный звук тряски. По истечении
+    ///   deathExplodeDelay (секунды) робот взрывается: спавнит лут, на его
+    ///   месте создаётся префаб взрыва, сам робот удаляется.
+    /// </summary>
     [RequireComponent(typeof(Health))]
     [RequireComponent(typeof(CapsuleCollider))]
     [RequireComponent(typeof(Rigidbody))]
-    [RequireComponent(typeof(AudioSource))]
     [DisallowMultipleComponent]
     public class RobotSwordsman : EnemyBase
     {
@@ -18,34 +43,28 @@ namespace CarGame.Combat
         [SerializeField] private float moveSpeed = 3.6f;
         [Tooltip("Скорость поворота к цели, градусов/с")]
         [SerializeField] private float turnSpeed = 420f;
-        [Tooltip("С какой дистанции робот бьёт, м")]
+        [Tooltip("С какой дистанции робот бьёт (до поверхности цели), м")]
         [SerializeField] private float attackRange = 2.1f;
         [Tooltip("Урон за удар по игроку")]
         [SerializeField] private float attackDamage = 11f;
         [Tooltip("Интервал между ударами, с")]
         [SerializeField] private float attackCooldown = 1.1f;
-        [Tooltip("Скорость цели (по смещению трансформации), ниже которой она \"стоит\" и мечник тоже встаёт, м/с")]
-        [SerializeField] private float targetStillSpeed = 0.35f;
-        [Tooltip("Скорость цели, выше которой она снова \"движется\" и погоня продолжается, м/с")]
-        [SerializeField] private float targetMovingSpeed = 0.6f;
         [Tooltip("Множитель урона, если цель — машина")]
         [SerializeField] private float carDamageMultiplier = 1.4f;
-        [Tooltip("Сколько секунд робот стоит неподвижно ПОСЛЕ КАЖДОГО реального удара " +
-                 "(по ТЗ — 2 с). Это же значение является паузой между ударами: следующий " +
-                 "замах начинается сразу по окончании стойки.")]
+        [Tooltip("Сколько секунд робот стоит в Idle ПОСЛЕ КАЖДОГО удара " +
+                 "(по ТЗ — 2 с). Это же пауза между замахами: следующий удар " +
+                 "начинается сразу по её окончании.")]
         [SerializeField] private float attackStopDuration = 2f;
 
         [Header("Смерть")]
         [Tooltip("Булев параметр Animator, запускающий лупнутую анимацию смерти " +
-                 "(тряску). Пока она играется и идёт таймер до взрыва, робот не двигается. " +
-                 "В SwordBot.controller это параметр \"Die\" (Bool)")]
+                 "(тряску). Пока она играется и идёт таймер до взрыва, робот не двигается.")]
         [SerializeField] private string dieParameter = "Die";
-        [Tooltip("Таймер от запуска анимации смерти до взрыва, с. Всё это время " +
-                 "робот трясётся (луп анимации) и стоит на месте")]
+        [Tooltip("Таймер от запуска анимации смерти до взрыва, СЕКУНД. Всё это время " +
+                 "робот трясётся (луп анимации) и стоит на месте.")]
         [SerializeField] private float deathExplodeDelay = 1.5f;
         [Tooltip("Префаб взрыва. Создаётся на месте робота по истечении таймера смерти, " +
-                 "сам робот при этом удаляется " +
-                 "(Assets/Prefabs/Effects/Explosion.prefab)")]
+                 "сам робот при этом удаляется (Assets/Prefabs/Effects/Explosion.prefab)")]
         [SerializeField] private GameObject explosionPrefab;
         [Tooltip("Звук смерти робота — проигрывается ОДИН РАЗ в начале таймера до взрыва")]
         [SerializeField] private AudioClip deathSound;
@@ -64,23 +83,19 @@ namespace CarGame.Combat
         [SerializeField] private bool animateStrike = true;
         [Tooltip("Длительность перехода между состояниями, с. 0 — мгновенное переключение")]
         [SerializeField] private float crossFade = 0.12f;
-        [Tooltip("Порог скорости, выше которого робот на патруле идёт (Walk), а не стоит (Idle), м/с")]
-        [SerializeField] private float walkThreshold = 0.25f;
 
         [Header("Названия состояний в Animator")]
-        [Tooltip("Стоит на месте, цель не видна")]
+        [Tooltip("Стоит на месте (патрульная передышка и пост-ударная стойка)")]
         [SerializeField] private string idleState = "Idle";
-        [Tooltip("Идёт по патрулю, цель не видна")]
+        [Tooltip("Идёт по патрулю")]
         [SerializeField] private string walkState = "Walk";
-        [Tooltip("Бежит на цель (анимация Run). В SwordBot.controller переход Idle→Run идёт через триггер Run — код шлёт именно его")]
+        [Tooltip("Бежит за целью")]
         [SerializeField] private string runState = "Run";
         [Tooltip("Атака")]
         [SerializeField] private string attackState = "Attack";
 
         // Кэш типов параметров AnimatorController (Bool == 4). Пересобирается
         // при смене контроллера, чтобы не читать animator.parameters каждый кадр.
-        // Внимание: брать параметры нужно из Animator.parameters (AnimatorControllerParameter[]),
-        // а не из RuntimeAnimatorController — у последнего свойства parameters нет.
         private AnimatorControllerParameter[] cachedParameters;
         private RuntimeAnimatorController cachedController;
 
@@ -88,48 +103,6 @@ namespace CarGame.Combat
         [SerializeField] private LootEntry[] loot = new LootEntry[0];
         [Tooltip("Насколько разлетаются выпавшие предметы, м")]
         [SerializeField] private float scatterRadius = 0.5f;
-
-        private Rigidbody body;
-        private float nextAttackTime;
-        private bool hadTarget;
-        private string currentState;
-        private float attackLockTime;
-        private float attackStopTimer;
-
-        // ===== СМЕРТЬ (состояние Death) =====
-        // Робот умер: включена лупнутая анимация смерти (Bool-параметр
-        // dieParameter в Animator), робот НЕ двигается, идёт таймер
-        // deathExplodeDelay. По истечении — взрыв (спавн explosionPrefab на
-        // месте робота, сам робот удаляется) и спавн лута.
-        private bool dying;
-        // Момент смерти (Time.time). Таймер до взрыва считается от него.
-        private float deathTime;
-        // Источник звука тряски: loop = true, играет всё время пока робот
-        // трясётся перед взрывом.
-        private AudioSource deathRattleSource;
-        // Сколько ударов РЕАЛЬНО дошло до цели за время жизни робота. Нужно,
-        // чтобы отличить «холостую» атаку сразу после спавна (цель далеко,
-        // замах по воздуху) от настоящего боя: пост-ударная 2-секундная
-        // заминка включается только после первого реального контакта.
-        private int strikesDone;
-        // Заминка после удара (по ТЗ — 2 секунды): робот не двигается, пока
-        // таймер активен. Тикает в Update, ставится в момент удара.
-        private Vector3 lastTargetPosition;
-        private bool hasLastTargetPosition;
-        // Гистерезис «цель стоит»: вход в состояние покоя по targetStillSpeed,
-        // выход — только когда цель реально разогналась до targetMovingSpeed.
-        // Иначе микродрожание физики дёргало бы запрет движения каждый кадр.
-        private bool targetHoldingStill;
-        private float attackEnteredTime;
-        // Диагностика преследования: робот больше НЕ сдаётся и не сбрасывает
-        // цель при отсутствии прогресса (по ТЗ погоня бессрочная). Поля оставлены
-        // для наблюдения за дистанцией/прогрессом; chaseGiveUpTime больше не
-        // используется для отмены преследования.
-        [SerializeField] private float chaseGiveUpTime = 3f;
-        private float prevChaseDistance = -1f;
-        private float chaseNoProgressTimer;
-        private float chaseProgress;
-        private float noProgressStallTimer;
 
         [Header("Звуки")]
         [Tooltip("Свой клип шагов (звучит при ходьбе/беге). Пусто — процедурный звук")]
@@ -142,23 +115,47 @@ namespace CarGame.Combat
         [SerializeField][Range(0f, 2f)] private float alertVolume = 0.8f;
 
         [Header("Память цели")]
-        [Tooltip("Сколько секунд мечник помнит игрока после потери видимости (игрок побежал за стену, закрылся от обзора) и продолжает преследовать последнюю известную позицию. По ТЗ — 10 секунд.")]
+        [Tooltip("Сколько секунд мечник помнит игрока после потери видимости и " +
+                 "продолжает преследовать последнюю известную позицию. По ТЗ — 10 секунд.")]
         [SerializeField] private float targetMemoryDuration = 10f;
+
+        private Rigidbody body;
+        private string currentStateName;
+        // Таймер пост-ударной стойки (Idle). Ставится в момент удара равным
+        // attackStopDuration; пока > 0 — робот НЕ двигается и НЕ замахивается.
+        private float strikeHoldTimer;
+        // Когда можно начать следующий замах (Time.time). Совпадает с концом
+        // стойки — отдельного cooldown нет: по ТЗ следующий удар начинается
+        // сразу после того, как робот отстоит свои секунды.
+        private float nextStrikeTime;
+        // Замах запущен, ждём окончания клипа Attack: в этот период аниматор
+        // не трогаем, чтобы не оборвать анимацию удара.
+        private bool attackPlaying;
+        private float attackPlayUntil;
+        // ===== СОСТОЯНИЕ DEATH =====
+        private bool dying;
+        // Момент смерти (Time.time). Таймер deathExplodeDelay — в СЕКУНДАХ,
+        // считается от него (Time.time тоже в секундах).
+        private float deathTime;
+        // Зацикленный источник звука тряски на время предсмертной агонии.
+        private AudioSource deathRattleSource;
 
         public Animator Animator => animator;
 
         /// <summary>
-        /// Мечник ПОМНИТ цель: потерял игрока из виду (тот спрятался за стеной,
-        /// преградилось что-то) — робот не «забывает» его мгновенно, а бежит к
-        /// последней виденной позиции ещё targetMemoryDuration секунд (по ТЗ 10).
-        /// Только отстояв память целиком, мечник возвращается к патрулю.
+        /// Мечник ПОМНИТ цель: потерял игрока из виду — робот бежит к последней
+        /// виденной позиции ещё targetMemoryDuration секунд (по ТЗ 10). Только
+        /// отстояв память целиком, мечник возвращается к патрулю.
         /// </summary>
         protected override bool HasSightMemory => true;
 
-        /// <summary>Мечник: упор в препятствие или временная потеря видимости НЕ
-        /// должны быть причиной сброса цели — он обходит преграду и помнит
-        /// игрока targetMemoryDuration секунд.</summary>
+        /// <summary>Мечник упорно преследует: препятствие или временная потеря
+        /// видимости НЕ являются причиной сброса цели.</summary>
         protected override bool DropTargetWhenUnreachable => false;
+
+        /// <summary>Память цели — 10 секунд по ТЗ, переопределяем старое
+        /// сериализованное значение loseTargetMemory из префаба.</summary>
+        protected override float LoseTargetMemoryOverride => targetMemoryDuration;
 
         private void ApplyBloodMoonBuffs()
         {
@@ -166,14 +163,6 @@ namespace CarGame.Combat
             moveSpeed *= BloodMoonSpeedMultiplier;
             attackDamage *= BloodMoonDamageMultiplier;
         }
-
-        /// <summary>
-        /// Память цели у мечника — 10 секунд по ТЗ. В префабах сериализовано
-        /// старое значение loseTargetMemory (4 с); переопределяем его на
-        /// targetMemoryDuration при старте, чтобы поведение гарантированно
-        /// соответствовало требованию «помнить игрока 10 секунд».
-        /// </summary>
-        protected override float LoseTargetMemoryOverride => targetMemoryDuration;
 
         private void Awake()
         {
@@ -193,624 +182,219 @@ namespace CarGame.Combat
 
             BaseAwake();
 
-            // Звуковые поля этого скрипта настраивают общий звуковой движок.
             ApplySoundClips(stepSound, null, null, null, alertSound, null,
                 stepVolume, -1f, -1f, alertVolume, -1f, -1f);
 
             if (health != null) health.Died += OnDied;
         }
 
-        /// <summary>
-        /// Пост-ударная заминка (attackStopDuration) — требование ТЗ, но оно
-        /// осмысленно только после РЕАЛЬНО нанёсшего урон удара. «Холостые»
-        /// замахи (робот ещё не достал цель, промахнулся сквозь стену) НЕ
-        /// должны обнулять скорость и залипать аниматор в Idle: иначе мечник
-        /// сразу после спавна бьёт воздух, встаёт на месте и топчется, пока
-        /// игрок сам не подойдёт под удар. Здесь блокировка движения
-        /// (EnemyBase.attackLockUntil) усекается до длины клипа Attack — робот
-        /// стоит ровно столько, сколько играется замах, и продолжает бежать.
-        /// </summary>
-        private void TrimMovementLockToAttackClip()
-        {
-            if (strikesDone > 0) return;
-            if (animator == null || !animateStrike) return;
-
-            float clip = AttackStateLength();
-            float allowed = Time.time + Mathf.Max(0.1f, clip);
-            LockMovement(Mathf.Max(0f, allowed - Time.time));
-        }
-
         private void Update()
         {
             if (health == null || health.IsDead) return;
 
-            // Состояние Death: робот умер и трясётся в лупнутой анимации
-            // смерти. Он НЕ двигается, НЕ атакует, НЕ обновляет ИИ — только
-            // тикает таймер до взрыва (звук тряски крутится сам через loop).
+            // Death: робот умер — трясётся в лупнутой анимации, НЕ двигается,
+            // НЕ атакует. Тикает только таймер до взрыва (звук тряски крутится
+            // сам через loop).
             if (dying)
             {
-                UpdateDeathTimer();
+                if (Time.time - deathTime >= deathExplodeDelay) Explode();
                 return;
             }
 
             BaseUpdate();
 
-            // Хвост анимации удара тикает отдельно от cooldown: робот стоит
-            // ровно столько, сколько длится клип Attack (~0.42 с), а не весь
-            // интервал между ударами — иначе он «залипал» в стойке атаки.
-            if (attackStopTimer > 0f) attackStopTimer -= Time.deltaTime;
-
-            TrimMovementLockToAttackClip();
+            // Тик пост-ударной стойки (секунды).
+            if (strikeHoldTimer > 0f) strikeHoldTimer -= Time.deltaTime;
 
             Vector3 destination = ResolveDestination();
             Vector3 flatDelta = Vector3.ProjectOnPlane(destination - FrontPosition, Vector3.up);
-            float distance = flatDelta.magnitude;
 
-            bool engaged = HasTarget;
+            bool engaged = HasTarget && Target != null && !Target.Equals(null);
 
-            // Анти-залипание преследования: если робот НЕ приближается к цели
-            // (упёрся в невидимый коллайдер/стену) — цель НЕ сбрасывается.
-            // По требованию геймплея мечник преследует игрока без остановок и
-            // без «сдачи»: вместо прежнего BeginPause(0.8f) и возврата в
-            // патруль робот просто продолжает бежать, а обход препятствий
-            // (ComputeAvoidance/detour в EnemyBase) выводит его из тупика.
-            // Таймеры прогресса оставлены только для диагностики поведения.
-            if (engaged && distance > attackRange * 1.2f)
-            {
-                float progress = (prevChaseDistance < 0f ? 0f : prevChaseDistance - distance);
-                chaseProgress += progress;
-                chaseNoProgressTimer += Time.deltaTime;
-
-                // Робот упёрся в препятствие и стоит (скорость почти нулевая,
-                // идти он пытается) — цель НЕ забываем: включаем принудительный
-                // объезд в обход «мягких» условий UpdateStuckCheck (контакт с
-                // коллайдером может не фиксироваться из-за отталкивания физикой).
-                bool stalled = body != null
-                    && new Vector2(body.linearVelocity.x, body.linearVelocity.z).magnitude < StuckSpeedValue;
-                if (stalled) noProgressStallTimer += Time.deltaTime;
-                else noProgressStallTimer = 0f;
-
-                if (noProgressStallTimer >= StuckDelayValue && !IsDetourActive)
-                {
-                    noProgressStallTimer = 0f;
-                    ForceDetourAroundObstacle();
-                }
-            }
-            else
-            {
-                chaseNoProgressTimer = 0f;
-                chaseProgress = 0f;
-                noProgressStallTimer = 0f;
-            }
-            prevChaseDistance = engaged ? distance : -1f;
-
-            // «Цель стоит на месте» — по смещению позиции цели между кадрами
-            // (Health цели у игрока/машины может не иметь Rigidbody, поэтому
-            // скорость считаем именно по перемещению трансформации). Гистерезис:
-            // вход в покой ниже targetStillSpeed, выход выше targetMovingSpeed.
-            bool targetStill = false;
-            if (engaged && Target != null && !Target.Equals(null))
-            {
-                Vector3 targetPosition = Target.transform.position;
-                if (hasLastTargetPosition)
-                {
-                    float targetSpeed = Vector3.Distance(targetPosition, lastTargetPosition)
-                        / Mathf.Max(0.0001f, Time.deltaTime);
-                    if (!targetHoldingStill && targetSpeed <= targetStillSpeed) targetHoldingStill = true;
-                    else if (targetHoldingStill && targetSpeed >= targetMovingSpeed) targetHoldingStill = false;
-                }
-                else
-                {
-                    targetHoldingStill = false;
-                }
-
-                lastTargetPosition = targetPosition;
-                hasLastTargetPosition = true;
-                targetStill = targetHoldingStill;
-            }
-            else
-            {
-                targetHoldingStill = false;
-                hasLastTargetPosition = false;
-            }
-
-            bool striking = attackStopTimer > 0f;
-
-            // Дистанция до поверхности цели: считается ДО ПОВЕРХНОСТИ (для
-            // машины — по ближайшей точке коллайдеров корпуса), а не до центра
-            // Health. Нужна и для блока движения (стоит ли цель в радиусе
-            // удара), и для блока атаки ниже.
-            float strikeDistanceNow = engaged && Target != null && !Target.Equals(null)
-                ? SurfaceDistanceTo(FrontPosition + Vector3.up, Target)
-                : float.MaxValue;
-
-            // Цель — машина (занятая или пустая). Отдельно: занята ли игрокОМ.
-            bool targetIsCar = engaged && Target != null && !Target.Equals(null)
-                && (Target.IsCar || Target.GetComponentInParent<CarController>() != null);
+            // Занятая игроком машина — цель: идём прямо на кузов (не обходим).
             bool occupiedCarNow = engaged && IsOccupiedVehicleTarget();
 
-            // Анти-залипание преследования: если робот НЕ приближается к цели
-            // (упёрся в препятствие) — цель НЕ сбрасывается. Мечник помнит
-            // игрока targetMemoryDuration секунд и обходит преграду
-            // (ComputeAvoidance/slide/scan/detour в EnemyBase). Направление
-            // задаём ВСЕГДА, когда можно идти — в том числе во время застоя
-            // (striking): раньше при striking direction был нулём, робот
-            // останавливался посреди преследования и аниматор уходил из Run.
+            // Дистанция ДО ПОВЕРХНОСТИ цели (для машины — ближайшая точка
+            // коллайдеров кузова), а не до центра Health.
+            float strikeDistance = engaged
+                ? SurfaceDistanceTo(FrontPosition + Vector3.up, Target)
+                : float.MaxValue;
+            bool inReach = engaged && strikeDistance <= attackRange;
+
+            // Страховка: робот мог войти в обход машины ещё до посадки игрока
+            // в авто. Пока цель — занятая машина, никакого облёта быть не должно.
+            if (occupiedCarNow && IsDetourActive) CancelDetour();
+
+            // --- Выбор направления движения ---
             Vector3 desiredDirection = flatDelta;
+            if (engaged && occupiedCarNow && !inReach)
+            {
+                // Машина крупная: центр корпуса далеко, а бить надо по капоту —
+                // целимся в ближайшую точку поверхности кузова.
+                Vector3 toSurface = ClosestCarPoint(Target) - FrontPosition;
+                toSurface.y = 0f;
+                if (toSurface.sqrMagnitude > 0.0001f) desiredDirection = toSurface;
+            }
             if (desiredDirection.sqrMagnitude < 0.0001f && engaged && !IsTargetColliderVisible())
             {
-                // Цель «внутри» робота или вплотную, но не видна (за стеной):
-                // идём к последней видимой точке, чтобы не стоять на месте.
+                // Цель «внутри» робота, но не видна (за стеной) — идём к
+                // последней видимой точке, чтобы не стоять на месте.
                 desiredDirection = LastKnownTargetPosition - transform.position;
             }
 
-            // Машина с игроком внутри — цель, а не препятствие: идём прямо на неё,
-            // иначе ComputeAvoidance начинает её обходить вместо атаки. Пустая
-            // машина остаётся препятствием и обходится штатно (по требованию).
-            bool chargeOccupiedCar = occupiedCarNow;
-
-            // Страховка от «залипания» объезда: робот мог войти в detour ещё до
-            // посадки игрока в машину (пустое авто = препятствие) или из-за
-            // случайного контакта с дверью/крылом. Пока цель — занятая машина,
-            // никакого облёта быть не должно: сбрасываем активный обход и идём
-            // прямо на кузов. Иначе мечник «обходит машину у двери» и «упирается
-            // в низкую часть кузова», как описано в ТЗ.
-            if (chargeOccupiedCar && IsDetourActive) CancelDetour();
-
-            if (chargeOccupiedCar)
-            {
-                // Машина крупная: центр корпуса далеко, а бить надо по капоту.
-                // Перенацеливаемся на БЛИЖАЙШУЮ ТОЧКУ ПОВЕРХНОСТИ кузова — иначе
-                // робот останавливался в метрах от машины («не мог попасть»).
-                // Порог остановки — физический контакт капсулы с кузовом:
-                // дистанция до поверхности меньше 0.35 м. Раньше робот вставал,
-                // как только центр Health машины попадал в радиус EffectiveStrikeRange
-                // (~2 м от поверхности) — до машины он НЕ доходил, удар проходил
-                // только если игрок сам подъезжал к боту.
-                float surface = SurfaceDistanceTo(FrontPosition + Vector3.up, Target);
-                if (surface > 0.35f)
-                {
-                    Vector3 toSurface = ClosestCarPoint(Target) - FrontPosition;
-                    toSurface.y = 0f;
-                    if (toSurface.sqrMagnitude > 0.0001f)
-                        desiredDirection = toSurface;
-                }
-            }
-            Vector3 direction = chargeOccupiedCar
+            // Занятая машина — цель, а не препятствие: идём прямо на неё,
+            // иначе ComputeAvoidance начнёт её обходить вместо атаки.
+            Vector3 direction = occupiedCarNow
                 ? (desiredDirection.sqrMagnitude > 0.0001f ? desiredDirection.normalized : Vector3.zero)
                 : ComputeAvoidance(desiredDirection);
 
-            UpdateStuckCheck(
-                body != null ? body.linearVelocity : Vector3.zero,
-                !striking && direction.sqrMagnitude > 0.0001f);
+            // --- Разрешение движения (ровно по ТЗ) ---
+            // Стоять можно только: в пост-ударной стойке (strikeHoldTimer),
+            // во время замаха (attackPlaying) и на плановой передышке патруля
+            // (PatrolAllowsMove). Больше нигде: преследование бессрочное,
+            // патруль ходит.
+            bool holdingAfterStrike = strikeHoldTimer > 0f;
+            bool mayMove = CanMoveNow() && !holdingAfterStrike && !attackPlaying && PatrolAllowsMove();
+
+            UpdateStuckCheck(body != null ? body.linearVelocity : Vector3.zero, mayMove);
 
             if (direction.sqrMagnitude > 0.0001f) FaceDirection(direction, turnSpeed, Time.deltaTime);
 
-            // Пауза на точке патруля: робот обязан встать, а не «идти» на месте.
-            // Вне паузы мечник реально шагает к точке маршрута (анимация Walk),
-            // дошёл «N шагов» — встаёт на restDuration секунд (анимация Idle).
-            // По ТЗ скорость обнуляется в двух случаях:
-            // - striking: сам удар и пост-ударный КД (attackStopTimer) — робот
-            //   стоит неподвижно attackStopDuration секунд;
-            // - targetStill && inReach: цель не двигается и она в радиусе удара —
-            //   мечник тоже стоит и ждёт, пока цель сдвинется.
-            // Радиус, с которого мечник реально может ударить цель (машина
-            // расширяется до ближайшей точки кузова внутри EffectiveStrikeRange).
-            float reach = EffectiveStrikeRange(Target);
-            bool inReach = strikeDistanceNow <= reach;
-
-            // Подход к занятой машине: робот обязан добежать ДО КУЗОВА и
-            // коснуться его. Раньше блокировка движения считалась по центру
-            // Health машины (EffectiveStrikeRange), порог получался ~2 м от
-            // поверхности, капсула робота упиралась в бампер раньше — и мечник
-            // «застывал» у машины, не доставая до неё (урон проходил только
-            // когда игрок сам подъезжал). Для занятой машины теперь: стоим
-            // ТОЛЬКО когда реально касаются корпуса или дистанция до поверхности
-            // меньше радиуса удара + запас на толщину капсулы.
-            if (occupiedCarNow)
-                inReach = strikeDistanceNow <= reach + 0.35f || IsTouchingCarBody();
-
-            // Пост-ударная заминка (attackStopTimer / LockMovement): робот стоит
-            // attackStopDuration секунд ПОСЛЕ КАЖДОГО удара. Это ТРЕБОВАНИЕ ТЗ,
-            // но оно НЕ должно действовать на «холостой» первый удар сразу после
-            // спавна: если за время жизни ещё ни разу не было реального контакта
-            // с целью (strikesDone == 0), заминку пропускаем — иначе мечник
-            // «с момента появления атакует и встаёт на месте», топчется и ждёт,
-            // пока игрок сам подойдёт под удар.
-            bool hasRealContact = strikesDone > 0;
-            bool postStrikeHold = striking && hasRealContact;
-
-            bool mayMove = CanMoveNow() && !(engaged && targetStill && inReach);
-            float speed = !mayMove || postStrikeHold ? 0f : engaged ? moveSpeed : PatrolSpeed;
+            float speed = !mayMove ? 0f : engaged ? moveSpeed : PatrolSpeed;
             Move(mayMove ? direction : Vector3.zero, speed);
 
-            // В аниматоре «замах + пост-ударная стойка» держится только когда
-            // заминка реальна (был контакт с целью). Иначе робот сразу после
-            // доигранного клипа Attack возвращается к Run/Walk — без «залипания
-            // в Idle» при холостой атаке на пустом месте.
-            UpdateAnimation(engaged, postStrikeHold);
+            // --- Анимация ---
+            // Замах не прерываем: пока клип Attack реально играется в
+            // аниматоре, состояние не трогаем. Как только доиграл —
+            // выбираем актуальное состояние (стойка Idle / Run / Walk).
+            if (attackPlaying && Time.time < attackPlayUntil && IsAnimatorInAttackState())
+            {
+                // Доигрываем атаку.
+            }
+            else
+            {
+                if (attackPlaying)
+                {
+                    attackPlaying = false;
+                    ResetAttackTrigger();
+                    currentStateName = null;
+                }
+
+                string desired;
+                if (holdingAfterStrike) desired = idleState;          // шаг 2 атаки: стойка Idle
+                else if (engaged) desired = runState;                  // преследование: Run
+                else if (PatrolAllowsMove()) desired = walkState;      // патруль: шаг 1 — Walk
+                else desired = idleState;                              // патруль: шаг 2 — передышка Idle
+                ApplyState(desired);
+            }
 
             if (Voice != null && body != null)
                 Voice.Step(new Vector3(body.linearVelocity.x, 0f, body.linearVelocity.z), engaged);
 
-            if (!engaged || Target == null) return;
+            // --- Атака (шаг 1 порядка действий) ---
+            if (!engaged || holdingAfterStrike || attackPlaying) return;
+            if (!inReach) return;                       // не подошёл — не бьём
+            if (Time.time < nextStrikeTime) return;     // ещё стоим пост-ударную стойку
 
-            // Дистанция удара считается ДО ПОВЕРХНОСТИ цели (для машины — по
-            // ближайшей точке коллайдеров корпуса CarController.BodyColliders),
-            // а не до центра Health на корне: иначе мечник, упоровшись носом в
-            // капот, стоял формально в 3+ метрах и никогда не мог ударить.
-            float strikeDistance = strikeDistanceNow;
-
-            // По ТЗ: ЛЮБОЕ касание занятой машины обязано приводить к урону —
-            // даже если формальная дистанция чуть больше радиуса меча. Порог
-            // «касания» = 1.2 м (существенно больше attackRange): робот физически
-            // не может встать ближе метра к крупному кузову (отталкивание
-            // коллайдеров), поэтому прежний порог 0.45 м не срабатывал НИКОГДА —
-            // анимация замаха играла, а урон не наносился («бьёт, но не дамажит»,
-            // «не трогает багажник»). Теперь: если машина-цель в пределах длины
-            // меча от носовой точки робота — удар засчитывается по поверхности.
-            bool occupiedCar = occupiedCarNow;
-            bool touchingCar = occupiedCar && strikeDistance <= Mathf.Max(1.2f, attackRange);
-
-            // Для занятой машины дополнительно: если робот реально касается её
-            // корпусных коллайдеров своим телом — это тоже «любое касание».
-            if (!touchingCar && occupiedCar) touchingCar = IsTouchingCarBody();
-
-            // Если цель — машина вообще (занятая или нет), обычная проверка
-            // EffectiveStrikeRange НЕ должна блокировать удар: дистанция до
-            // центра кузова легко превышает радиус меча, и раньше удар просто
-            // не проходил дальше капота. Бьём машину всегда, когда дотянулись
-            // до любой точки её корпуса.
-            bool carTarget = targetIsCar;
-            if (!touchingCar && !carTarget && strikeDistance > reach) return;
-            if (!touchingCar && carTarget && strikeDistance > Mathf.Max(attackRange + 1f, reach)) return;
-
-            // Удар засчитывается только при РЕАЛЬНОМ достреле до поверхности
-            // цели. Раньше для машин порог расширялся габаритом кузова
-            // (EffectiveStrikeRange возвращал расстояние до самой дальней
-            // точки корпуса — у длинной машины больше 4 м), и мечник начинал
-            // замах издалека: анимация проигрывана, Linecast упирается в
-            // воздух, урон не проходит («бьёт, но попасть может только если
-            // игрок сам подъедет»). Теперь: пешая цель — радиус меча; машина —
-            // дистанция ДО ПОВЕРХНОСТИ кузова не больше радиуса меча (или
-            // физическое касание корпуса).
-            float strikeReach = Mathf.Max(attackRange, reach);
-            bool inTrueRange = carTarget
-                ? (strikeDistance <= attackRange || touchingCar)
-                : strikeDistance <= strikeReach;
-            if (!inTrueRange) return;
-
-            if (Time.time < nextAttackTime) return;
-            // По ТЗ: если цель НЕ двигается, мечник стоит вместе с ней и новый
-            // замах не начинает — ждёт, пока цель сдвинется. Исключение:
-            // машина-цель. Игрок за рулём неподвижного авто формально «стоит»,
-            // но по требованию мечник обязан бить занятую машину при касании —
-            // иначе он вечно топчется у кузова, ожидая движения стальной цели.
-            if (targetStill && !carTarget) return;
-
-            nextAttackTime = Time.time + attackCooldown;
-            // По ТЗ: в момент атаки бот останавливается и НЕ двигается 2 секунды
-            // после неё (attackStopDuration). Берём максимум из 2 с и длины клипа
-            // замаха, чтобы робот не сдвинулся раньше, чем доиграет атаку.
-            attackStopTimer = Mathf.Max(attackStopDuration, AttackStateLength());
-            // Синхронизируем базовую блокировку EnemyBase: CanMoveNow() == false
-            // на всё время пост-ударного КД, даже если наследник что-то упустил.
-            LockMovement(attackStopTimer);
+            nextStrikeTime = Time.time + attackStopDuration;
+            strikeHoldTimer = attackStopDuration;
             PlayAttack();
-            strikesDone++;
-            Strike(Target, distance);
+            Strike(Target, strikeDistance);
+        }
+
+        /// <summary>Видна ли цель напрямую (без проверки сектора обзора).</summary>
+        private bool IsTargetColliderVisible()
+        {
+            return Target != null && HasClearLineOfSightToTarget();
         }
 
         /// <summary>
-        /// Касается ли тело робота корпусной коллайдер занятой машины-цели
-        /// (Overlap по собственному габариту). Страховка против «не видно
-        /// касания» из-за физических зазоров: ClosestPoint может показывать
-        /// расстояние больше нуля там, где коллайдеры уже соприкасаются.
+        /// Сидит ли игрок внутри текущей цели-машины. Машина с водителем —
+        /// цель (не препятствие). Пустая машина остаётся препятствием и
+        /// обходится штатной логикой — так требует геймплей.
         /// </summary>
-        private bool IsTouchingCarBody()
+        private bool IsOccupiedVehicleTarget()
         {
             if (Target == null || Target.Equals(null)) return false;
-            CarController car = Target.GetComponentInParent<CarController>();
-            if (car == null) return false;
 
-            Collider[] bodies = car.BodyColliders;
-            if (bodies == null || bodies.Length == 0) return false;
+            // Канонический признак занятости: CarController.IsOccupied.
+            if (IsTargetOccupied(Target)) return true;
 
-            Collider self = GetComponent<CapsuleCollider>();
-            Vector3 origin = FrontPosition + Vector3.up;
-            float probe = 0.3f;
-
-            for (int i = 0; i < bodies.Length; i++)
+            // Резервная проверка: игрок официально сидит в ЭТОЙ машине.
+            PlayerController player = FindPlayer();
+            if (player != null && !player.Equals(null) && player.IsInCar
+                && player.CurrentVehicle != null)
             {
-                Collider body = bodies[i];
-                if (body == null || body.Equals(null) || !body.enabled) continue;
+                Health carHealth = player.CurrentVehicle.Health;
+                if (carHealth == Target) return true;
 
-                Vector3 closest = body.ClosestPoint(origin);
-                if (Vector3.Distance(origin, closest) <= probe) return true;
-
-                if (self != null)
-                {
-                    Vector3 selfClosest = self.ClosestPoint(body.bounds.center);
-                    if (Vector3.Distance(selfClosest, body.ClosestPoint(selfClosest)) <= 0.05f)
-                        return true;
-                }
+                CarController targetCar = Target.GetComponentInParent<CarController>();
+                if (targetCar != null && targetCar == player.CurrentVehicle) return true;
             }
 
             return false;
         }
 
-        private void UpdateAnimation(bool engaged, bool striking)
-        {
-            hadTarget = engaged;
-            if (animator == null) return;
-
-            // По ТЗ: после каждого удара робот уходит в КД и стоит на месте
-            // В АНИМАЦИИ IDLE. Во время пост-ударной блокировки не трогаем
-            // аниматор, пока клип Attack реально играется (иначе оборвём
-            // замах); как только аниматор вышел из Attack — форсируем Idle
-            // независимо от того, есть ли цель.
-            if (striking && attackLockTime > 0f && IsAnimatorInAttackState()) return;
-
-            // SwordBot.controller НЕ имеет параметров MoveSpeed/InCombat — он
-            // управляется псевдо-триггерами Idle / Walk / Run (тип Bool) и
-            // реальным триггером Attack. Определяем это динамически: если у
-            // контроллера есть хотя бы один параметр состояния, переключаем
-            // анимацию ТОЛЬКО параметрами и никогда не зовём animator.Play() —
-            // иначе Play каждый кадр обрывал цикл шагов и робот «топтался на
-            // месте».
-            bool parameterDriven = IsStateParameter(idleState) || IsStateParameter(walkState) || IsStateParameter(runState);
-
-            if (!parameterDriven)
-            {
-                // Старый путь для контроллеров, живущих на параметрах движения.
-                Vector3 velocity = body != null ? body.linearVelocity : Vector3.zero;
-                float speed = new Vector2(velocity.x, velocity.z).magnitude;
-                SetFloat("MoveSpeed", speed);
-                SetBool("InCombat", engaged);
-                animator.speed = 1f;
-                currentState = null;
-                return;
-            }
-
-            // Во время замаха (пока клип Attack реально играется в аниматоре)
-            // аниматор не трогаем — иначе оборвём удар. Как только аниматор
-            // покинул состояние Attack (сам ушёл по переходу или мы форсированно
-            // вывели его через Play в PlayAttack), управление состоянием
-            // возвращается в этот же кадр: ниже выбирается актуальное состояние
-            // (при цели — Run, на патруле — Walk/Idle). Раньше блокировка
-            // держалась таймером attackLockTime, и при любой рассинхронизации
-            // (таймер истёк раньше/позже реального клипа, переход Attack→Idle
-            // не сработал) мечник залипал в последнем кадре атаки.
-            if (attackLockTime > 0f)
-            {
-                attackLockTime -= Time.deltaTime;
-
-                if (!IsAnimatorInAttackState())
-                {
-                    // Замах доигран — немедленно снимаем блокировку.
-                    attackLockTime = 0f;
-                    currentState = null;
-                }
-                else if (attackLockTime <= 0f)
-                {
-                    // Таймер вышел, но аниматор всё ещё в Attack (переход не
-                    // отработал) — принудительно выводим его через Play.
-                    // ResetTrigger чистит возможный pending-триггер Attack,
-                    // чтобы он не вернул робота обратно в замах.
-                    ResetAttackTrigger();
-                    // В пост-ударном КД форсируем Idle (по ТЗ робот стоит в
-                    // Idle), иначе — возвращаемся к актуальному состоянию.
-                    int forcedHash = Animator.StringToHash(striking ? idleState : (engaged ? runState : idleState));
-                    if (HasState(forcedHash)) animator.Play(forcedHash, 0, 0f);
-                    attackLockTime = 0f;
-                    // При принудительном Play в Idle состояние «уже desired» —
-                    // обнуляем currentState, чтобы ApplyState ниже корректно
-                    // выставил Bool-флаги контроллера.
-                    currentState = null;
-                }
-                else
-                {
-                    return;
-                }
-            }
-
-            animator.speed = 1f;
-
-            // Механика мечника: три состояния ИИ.
-            // Патруль: робот ХОДИТ (анимация Walk); остановка допускается только
-            // короткая и только на маршруте — чтобы затем сменить направление
-            // (анимация Idle на время стоянки). Простоять весь патруль в Idle
-            // нельзя: PatrolAllowsMove() вне плановой стоянки всегда true.
-            // Атака: увидел цель — бежит к ней (Run) БЕЗ остановок, догнал — бьёт
-            // (Attack). После доигрывания атаки аниматор сам уходит в Idle, а код
-            // на следующем кадре переключает состояние по актуальной логике ИИ:
-            // цель есть — Run, цели нет — Walk/Idle по патрулю.
-            string desired;
-            if (striking)
-            {
-                // Пост-ударный КД: робот стоит на месте в Idle, даже если цель
-                // всё ещё видна. Движение уже обнулено выше (mayMove == false).
-                desired = idleState;
-            }
-            else if (engaged)
-            {
-                // Увидел цель → бег к ней (анимация Run). Если бежать некуда
-                // (цель в пределах удара и робот стоит) — остаёмся в Run-стойке,
-                // атаку инициирует блок Strike выше. В Idle при цели НЕ уходим.
-                desired = runState;
-            }
-            else if (PatrolAllowsMove())
-            {
-                // Патрулирование: идём анимацией Walk.
-                desired = walkState;
-            }
-            else
-            {
-                // Короткая плановая стоянка на маршруте / простоял после потери
-                // цели — Idle. Длительность стоянки ограничена patrolStopDuration.
-                desired = idleState;
-            }
-
-            ApplyState(desired);
-        }
-
         /// <summary>
-        /// Переключает состояние анимации под текущий тип параметра в
-        /// SwordBot.controller:
-        /// - Bool («псевдо-триггеры» Idle/Walk/Run): выставляем целевой параметр
-        ///   в true, остальные — в false. Флаг ставится ОДИН РАЗ на смену
-        ///   состояния: переходы в контроллере мгновенные (duration 0), и если
-        ///   держать флаг поднятым каждый кадр, завершающий переход (например
-        ///   Attack→Idle) тут же подхватывал поднятый флаг и возвращал обратно —
-        ///   аниматор переклинивало между Idle и Run каждую секунду;
-        /// - Trigger (Attack): шлём SetTrigger ровно один раз на смену состояния.
-        ///     Раньше для Bool-параметров вызывали SetTrigger каждый раз при
-        ///     смене состояния — Unity печатал ошибку и состояние не переключалось,
-        ///     из-за чего мечник проигрывал Walk/Run-переходы лишь частично и
-        ///     визуально «топтался на месте».
+        /// Ближайшая к роботу точка на коллайдерах корпуса цели-машины:
+        /// бежать нужно на поверхность кузова, а не в его центр.
         /// </summary>
-        private void ApplyState(string state)
+        private Vector3 ClosestCarPoint(Health target)
         {
-            if (string.IsNullOrEmpty(state)) return;
+            Vector3 origin = FrontPosition + Vector3.up;
+            if (target == null || target.Equals(null)) return origin;
 
-            // Смена состояния = ровно одно событие в аниматор. Пока desired не
-            // изменился, аниматор не трогаем: цикл Walk/Run доигрывается целиком.
-            if (currentState == state) return;
+            CarController car = target.GetComponentInParent<CarController>();
 
-            AnimatorControllerParameterType type = GetParameterType(state);
+            Collider[] bodies = car != null ? car.BodyColliders : null;
+            if (bodies == null || bodies.Length == 0) return target.transform.position;
 
-            if (type == AnimatorControllerParameterType.Bool)
+            Vector3 best = target.transform.position;
+            float bestDist = float.MaxValue;
+            foreach (Collider col in bodies)
             {
-                currentState = state;
-                ResetOtherStateBools(state);
-                animator.SetBool(state, true);
-                return;
+                if (col == null || col.Equals(null) || !col.enabled) continue;
+                Vector3 closest = col.ClosestPoint(origin);
+                float d = Vector3.Distance(origin, closest);
+                if (d < bestDist) { bestDist = d; best = closest; }
             }
-
-            if (type == AnimatorControllerParameterType.Trigger)
-            {
-                // Анимация атаки НЕ должна блокировать выбор следующего
-                // состояния: как только замах доигран (или аниматор сам ушёл
-                // из Attack), сразу выбираем актуальное состояние — при цели
-                // это Run, на патруле Walk/Idle. Раньше здесь стоял ранний
-                // выход, из-за чего после удара мечник оставался в Idle
-                // (Attack→Idle) или вообще в последнем кадре Attack, пока не
-                // сменится desired — визуально это выглядело как «залип в
-                // анимации атаки».
-                if (state == attackState) currentState = null;
-
-                ResetOtherStateBools(state);
-                // Сброс до установки: иначе «залипший» с прошлых циклов триггер
-                // срабатывал повторно и аниматор клинил между состояниями.
-                animator.ResetTrigger(state);
-                animator.SetTrigger(state);
-                return;
-            }
-
-            // Параметра с таким именем нет — ничего не делаем (не ломаем старый путь).
+            return best;
         }
 
-        private void ResetOtherStateBools(string except)
+        private float AttackStateLength()
         {
-            string[] states = { idleState, walkState, runState, attackState };
-            for (int i = 0; i < states.Length; i++)
+            AnimationClip[] clips = animator != null && animator.runtimeAnimatorController != null
+                ? animator.runtimeAnimatorController.animationClips
+                : null;
+
+            if (clips != null)
             {
-                string s = states[i];
-                if (string.IsNullOrEmpty(s) || s == except) continue;
-                if (GetParameterType(s) == AnimatorControllerParameterType.Bool)
-                    animator.SetBool(s, false);
-            }
-        }
-
-        private AnimatorControllerParameterType GetParameterType(string name)
-        {
-            if (animator == null || string.IsNullOrEmpty(name))
-                return AnimatorControllerParameterType.Float;
-
-            RuntimeAnimatorController controller = animator.runtimeAnimatorController;
-            if (controller == null) return AnimatorControllerParameterType.Float;
-
-            // У RuntimeAnimatorController свойства parameters НЕ существует —
-            // список параметров доступен только через Animator.parameters.
-            // Кэшируем его, пересобирая только при смене контроллера.
-            if (cachedParameters == null || cachedController != controller)
-            {
-                cachedController = controller;
-                cachedParameters = animator.parameters;
+                for (int i = 0; i < clips.Length; i++)
+                {
+                    if (clips[i].name != attackState) continue;
+                    float speed = Mathf.Abs(animator.speed);
+                    return speed > 0.01f ? clips[i].length / speed : clips[i].length;
+                }
             }
 
-            if (cachedParameters == null) return AnimatorControllerParameterType.Float;
-
-            for (int i = 0; i < cachedParameters.Length; i++)
-            {
-                if (cachedParameters[i].name == name) return cachedParameters[i].type;
-            }
-
-            return AnimatorControllerParameterType.Float;
-        }
-
-        private bool IsStateParameter(string name)
-        {
-            AnimatorControllerParameterType type = GetParameterType(name);
-            return type == AnimatorControllerParameterType.Bool
-                || type == AnimatorControllerParameterType.Trigger;
+            return Mathf.Max(0.1f, attackCooldown * 0.6f);
         }
 
         private void PlayAttack()
         {
-            attackEnteredTime = Time.time;
-
-            if (!animateStrike || animator == null)
-            {
-                attackLockTime = 0f;
-                return;
-            }
-            if (string.IsNullOrEmpty(attackState))
-            {
-                attackLockTime = 0f;
-                return;
-            }
+            if (!animateStrike || animator == null || string.IsNullOrEmpty(attackState)) return;
 
             // SwordBot.controller переключает атаку триггером "Attack":
-            // Idle/Walk/Run → Attack по этому триггеру; из Attack есть переходы
-            // в Idle (по умолчанию), Run и Walk (с Exit Time) — после доигранного
-            // замаха аниматор сам уходит в актуальное состояние движения.
-            // Форсированный Play здесь только сбивал переходы.
-            if (IsStateParameter(attackState))
-            {
-                ApplyState(attackState);
-                attackLockTime = AttackStateLength();
-
-                // Страховка от «вечной атаки»: если аниматор за пару кадров не
-                // ушёл в состояние Attack (переход сбит, параметр не тот),
-                // блокировку выбора состояния снимаем — робот продолжит бег.
-                if (!IsAnimatorInAttackState())
-                {
-                    attackLockTime = 0f;
-                    currentState = null;
-                }
-                return;
-            }
-
-            int hash = Animator.StringToHash(attackState);
-            if (!HasState(hash))
-            {
-                attackLockTime = 0f;
-                return;
-            }
-
-            currentState = attackState;
-            attackLockTime = AttackStateLength();
-
-            if (crossFade <= 0.001f) animator.Play(hash, 0, 0f);
-            else animator.CrossFadeInFixedTime(hash, crossFade * 0.5f, 0, 0f);
+            // Idle/Walk/Run → Attack; из Attack есть выход в Idle. Удар
+            // должен доиграться ЦЕЛИКОМ — дальше код держит Idle-стойку.
+            attackPlaying = true;
+            attackPlayUntil = Time.time + AttackStateLength() + 0.25f;
+            ApplyState(attackState);
         }
 
         /// <summary>
         /// Находится ли аниматор прямо сейчас в состоянии атаки (или в переходе
-        /// из него). Используется как страховка: пока идёт замах, код не трогает
-        /// аниматор; если же замах закончился, а управление почему-то осталось
-        /// заблокированным — оно принудительно освобождается.
+        /// из него). Страховка: пока идёт замах, аниматор не трогаем.
         /// </summary>
         private bool IsAnimatorInAttackState()
         {
@@ -831,155 +415,91 @@ namespace CarGame.Combat
             return false;
         }
 
-        /// <summary>Видна ли цель напрямую (без проверки сектора обзора).</summary>
-        private bool IsTargetColliderVisible()
-        {
-            return Target != null && HasClearLineOfSightToTarget();
-        }
-
         /// <summary>
-        /// Сидит ли игрок внутри текущей цели-машины. Машина с водителем — это
-        /// тоже цель: её нельзя считать препятствием, иначе мечник начинает её
-        /// обходить вместо атаки. Пустая машина (игрок снаружи/рядом) остаётся
-        /// препятствием и обходится штатной логикой — так требует геймплей.
+        /// Переключает состояние анимации под тип параметра в
+        /// SwordBot.controller: Bool-«псевдотриггеры» Idle/Walk/Run выставляются
+        /// флагом (целевой true, остальные false), Attack — реальным Trigger.
+        /// Флаг ставится ОДИН РАЗ на смену состояния: пока desired не изменился,
+        /// аниматор не трогаем, иначе цикл Walk/Run обрывался каждый кадр и
+        /// робот «топтался на месте».
         /// </summary>
-        private bool IsOccupiedVehicleTarget()
+        private void ApplyState(string state)
         {
-            if (Target == null || Target.Equals(null)) return false;
+            if (string.IsNullOrEmpty(state)) return;
+            if (currentStateName == state) return;
 
-            // Канонический признак занятости: CarController.IsOccupied (driver !=
-            // null). Водитель ставится при EnterVehicle и снимается при выходе —
-            // именно он делает игрока неуязвимым/невидимым для ботов.
-            if (IsTargetOccupied(Target)) return true;
+            AnimatorControllerParameterType type = GetParameterType(state);
 
-            // Резервная проверка на случай рассинхронизации ссылки водителя:
-            // игрок официально сидит в ЭТОЙ машине (player.CurrentVehicle).
-            PlayerController player = FindPlayer();
-            if (player != null && !player.Equals(null) && player.IsInCar
-                && player.CurrentVehicle != null)
+            if (type == AnimatorControllerParameterType.Bool)
             {
-                Health carHealth = player.CurrentVehicle.Health;
-                if (carHealth == Target) return true;
-
-                // Health цели может висеть на дочернем объекте машины, а
-                // CurrentVehicle.Health — на корне: сравниваем не ссылки, а
-                // принадлежность одной и той же машине.
-                CarController targetCar = Target.GetComponentInParent<CarController>();
-                if (targetCar != null && targetCar == player.CurrentVehicle) return true;
+                currentStateName = state;
+                ResetOtherStateBools(state);
+                animator.SetBool(state, true);
+                return;
             }
 
-            return false;
+            if (type == AnimatorControllerParameterType.Trigger)
+            {
+                // Триггер — событие, а не состояние: «текущим» считаем то,
+                // куда робот вернётся после удара (стойка Idle при цели).
+                currentStateName = strikeHoldTimer > 0f ? idleState : null;
+                ResetOtherStateBools(state);
+                animator.ResetTrigger(state);
+                animator.SetTrigger(state);
+                return;
+            }
+
+            // Параметра с таким именем нет — ничего не делаем.
+        }
+
+        private void ResetOtherStateBools(string except)
+        {
+            if (animator == null) return;
+            string[] states = { idleState, walkState, runState };
+            for (int i = 0; i < states.Length; i++)
+            {
+                string s = states[i];
+                if (string.IsNullOrEmpty(s) || s == except) continue;
+                if (GetParameterType(s) == AnimatorControllerParameterType.Bool)
+                    animator.SetBool(s, false);
+            }
+        }
+
+        private AnimatorControllerParameterType GetParameterType(string name)
+        {
+            if (animator == null || string.IsNullOrEmpty(name))
+                return AnimatorControllerParameterType.Float;
+
+            RuntimeAnimatorController controller = animator.runtimeAnimatorController;
+            if (controller == null) return AnimatorControllerParameterType.Float;
+
+            if (cachedParameters == null || cachedController != controller)
+            {
+                cachedController = controller;
+                cachedParameters = animator.parameters;
+            }
+
+            if (cachedParameters == null) return AnimatorControllerParameterType.Float;
+
+            for (int i = 0; i < cachedParameters.Length; i++)
+            {
+                if (cachedParameters[i].name == name) return cachedParameters[i].type;
+            }
+
+            return AnimatorControllerParameterType.Float;
         }
 
         /// <summary>
-        /// Ближайшая к кромке атаки точка на коллайдерах корпуса цели-машины
-        /// (CarController.BodyColliders). Используется для наведения: бежать
-        /// нужно на поверхность кузова, а не на его центр.
-        /// </summary>
-        private Vector3 ClosestCarPoint(Health target)
-        {
-            Vector3 origin = FrontPosition + Vector3.up;
-            if (target == null || target.Equals(null)) return origin;
-
-            // CarController ищем строго вверх по иерархии: он живёт на корне
-            // машины, а Health цели может висеть на дочернем объекте.
-            CarController car = target.GetComponentInParent<CarController>();
-
-            Collider[] bodies = car != null ? car.BodyColliders : null;
-            if (bodies == null || bodies.Length == 0) return target.transform.position;
-
-            Vector3 best = target.transform.position;
-            float bestDist = float.MaxValue;
-            foreach (Collider col in bodies)
-            {
-                if (col == null || col.Equals(null) || !col.enabled) continue;
-                Vector3 closest = col.ClosestPoint(origin);
-                float d = Vector3.Distance(origin, closest);
-                if (d < bestDist) { bestDist = d; best = closest; }
-            }
-            return best;
-        }
-
-        /// <summary>
-        /// Принудительный объезд препятствия во время преследования: включается,
-        /// когда робот пытается бежать к цели, но стоит на месте (упёрся).
-        /// Обходит мягкие условия UpdateStuckCheck (там нужен физический контакт
-        /// вплотную, который не всегда фиксируется из-за отталкивания коллайдеров).
-        /// </summary>
-        private void ForceDetourAroundObstacle()
-        {
-            StartForcedDetour();
-        }
-
-        private float AttackStateLength()
-        {
-            AnimationClip[] clips = animator.runtimeAnimatorController != null
-                ? animator.runtimeAnimatorController.animationClips
-                : null;
-
-            if (clips != null)
-            {
-                for (int i = 0; i < clips.Length; i++)
-                {
-                    if (clips[i].name != attackState) continue;
-                    float speed = Mathf.Abs(animator.speed);
-                    return speed > 0.01f ? clips[i].length / speed : clips[i].length;
-                }
-            }
-
-            return Mathf.Max(0.1f, attackCooldown * 0.6f);
-        }
-
-        private bool HasState(int hash)
-        {
-            if (animator == null || !animator.isActiveAndEnabled) return false;
-            if (animator.runtimeAnimatorController == null) return false;
-
-            int layers = animator.layerCount;
-            for (int i = 0; i < layers; i++)
-            {
-                if (animator.HasState(i, hash)) return true;
-            }
-
-            return false;
-        }
-
-        private void SetBool(string parameter, bool value)
-        {
-            if (HasParameter(parameter)) animator.SetBool(parameter, value);
-        }
-
-        private void SetFloat(string parameter, float value)
-        {
-            if (HasParameter(parameter)) animator.SetFloat(parameter, value);
-        }
-
-        /// <summary>
-        /// Гасит pending-триггер атаки. Нужен для принудительного выхода из
-        /// состояния Attack: если триггер остался неподхваченным, следующий же
-        /// переход вернул бы робота обратно в замах («вечная атака»).
+        /// Гасит pending-триггер атаки: если триггер остался неподхваченным,
+        /// следующий переход вернул бы робота обратно в замах («вечная атака»).
         /// </summary>
         private void ResetAttackTrigger()
         {
             if (animator == null || string.IsNullOrEmpty(attackState)) return;
-            if (GetParameterType(attackState) == AnimatorControllerParameterType.Trigger
-                && HasParameter(attackState))
+            if (GetParameterType(attackState) == AnimatorControllerParameterType.Trigger)
             {
                 animator.ResetTrigger(attackState);
             }
-        }
-
-        private bool HasParameter(string parameter)
-        {
-            if (animator == null || string.IsNullOrEmpty(parameter)) return false;
-            if (animator.parameters == null || animator.parameters.Length == 0) return false;
-
-            for (int i = 0; i < animator.parameters.Length; i++)
-            {
-                if (animator.parameters[i].name == parameter) return true;
-            }
-
-            return false;
         }
 
         private void Move(Vector3 direction, float speed)
@@ -1002,53 +522,6 @@ namespace CarGame.Combat
             body.linearVelocity = velocity;
         }
 
-        /// <summary>
-        /// Дистанция удара. У машины Health висит на её корне, а габариты велики:
-        /// расстояние до центра корпуса легко превышает attackRange, из-за чего
-        /// удар по занятой машине никогда не срабатывал (робот «бил воздух»).
-        /// Для машины добавляем половину её диагонали в плоскости XZ.
-        /// </summary>
-        private float EffectiveStrikeRange(Health target)
-        {
-            if (target == null) return attackRange;
-
-            // Для машины радиус удара увеличивается по габаритам КОРПУСА (все
-            // коллайдеры кузова из CarController.BodyColliders), а не одного
-            // первого найденного — иначе удар «не дотягивался» до капота/кормы.
-            if (target.IsCar || target.GetComponentInParent<CarController>() != null)
-            {
-                CarController car = target.GetComponentInParent<CarController>();
-                if (car != null)
-                {
-                    float reach = attackRange;
-                    Vector3 origin = FrontPosition + Vector3.up;
-                    Collider[] bodies = car.BodyColliders;
-                    if (bodies != null)
-                    {
-                        foreach (Collider col in bodies)
-                        {
-                            if (col == null || col.Equals(null)) continue;
-                            Vector3 closest = col.ClosestPoint(origin);
-                            float d = Vector3.Distance(origin, closest);
-                            if (d > reach) reach = d;
-                        }
-                    }
-                    return Mathf.Max(reach, attackRange);
-                }
-            }
-
-            Collider bodyCollider = target.GetComponent<Collider>();
-            if (bodyCollider == null)
-                bodyCollider = target.GetComponentInChildren<Collider>();
-
-            if (bodyCollider == null) return attackRange;
-
-            Bounds bounds = bodyCollider.bounds;
-            float halfFootprint = new Vector3(bounds.size.x, 0f, bounds.size.z).magnitude * 0.5f;
-
-            return attackRange + halfFootprint;
-        }
-
         private void Strike(Health target, float distance)
         {
             Vector3 origin = FrontPosition + Vector3.up;
@@ -1057,11 +530,8 @@ namespace CarGame.Combat
                 : origin + transform.forward;
 
             // Цель-машина (занятая или нет): бьём ВСЕГДА по ХП КУЗОВА, а не по
-            // переданной ссылке target. В сцене Health машины и Health водителя
-            // — разные компоненты; раньше при рассинхроне цели удар уходил в
-            // неуязвимый Health игрока (TakeDamage проглатывал его молча) либо
-            // в null — машина не получала урона никогда. Берём канонический
-            // Health из CarController (он сам создаст компонент, если тот пуст).
+            // переданной ссылке target (Health водителя и Health кузова — разные
+            // компоненты; раньше удар уходил в неуязвимый Health игрока).
             CarController struckCar = FindCar(target, origin);
             if (struckCar != null)
             {
@@ -1084,9 +554,8 @@ namespace CarGame.Combat
                 Health carHealth = struckCar.Health;
                 if (carHealth == null) return;
 
-                // Игрок за рулём неуязвим — но кузов нет. На всякий случай
-                // страхуемся: если carHealth вдруг оказался Health игрока
-                // (чужая разметка HpOwner), берём любой Health на корне машины.
+                // Игрок за рулём неуязвим — но кузов нет. Страхуемся от чужой
+                // разметки HpOwner на компоненте машины.
                 if (carHealth.IsPlayer)
                 {
                     carHealth = struckCar.GetComponent<Health>();
@@ -1101,7 +570,7 @@ namespace CarGame.Combat
 
             if (target == null || target.Equals(null)) return;
 
-            // Пешая цель: прежняя проверка «бей не сквозь стену».
+            // Пешая цель: не бить сквозь стену.
             if (Physics.Linecast(origin, point, out RaycastHit hit, ~0, QueryTriggerInteraction.Ignore)
                 && !hit.collider.transform.IsChildOf(target.transform)
                 && !hit.collider.transform.IsChildOf(transform))
@@ -1111,10 +580,8 @@ namespace CarGame.Combat
         }
 
         /// <summary>
-        /// Машина цели: сначала по ссылке Health (CarController всегда на её
-        /// корне или родителе), затем страховка — ближайшая непустая машина к
-        /// точке удара (OverlapSphere по габариту вокруг origin). Если цель
-        /// вообще не связана с машиной — вернёт null (пешая атака).
+        /// Машина цели: сначала по ссылке Health, затем страховка — ближайшая
+        /// непустая машина к точке удара. Пешая цель → null.
         /// </summary>
         private CarController FindCar(Health target, Vector3 origin)
         {
@@ -1124,9 +591,6 @@ namespace CarGame.Combat
                 if (car != null) return car;
             }
 
-            // Страховка: цель — игрок, формально «в машине», но ссылка Health
-            // ведёт на объект вне иерархии авто. Тогда ищем машину физически —
-            // вокруг точки удара. Если рядом ничего нет, пробуем CurrentVehicle.
             Collider[] nearby = Physics.OverlapSphere(origin, attackRange + 1.5f);
             CarController best = null;
             float bestDist = float.MaxValue;
@@ -1149,11 +613,10 @@ namespace CarGame.Combat
         }
 
         /// <summary>
-        /// Момент смерти. Переход в состояние Death: включается лупнутая
-        /// анимация тряски (Bool-параметр Animator dieParameter), робот
-        /// останавливается, один раз играет звук смерти и по кругу — звук
-        /// тряски. По истечении deathExplodeDelay робот взрывается: на его
-        /// месте создаётся префаб взрыва, спавнится лут, сам робот удаляется.
+        /// Момент смерти → состояние Death: включается лупнутая анимация
+        /// тряски (Bool-параметр dieParameter), робот останавливается, один раз
+        /// играет звук смерти и по кругу — звук тряски. По истечении
+        /// deathExplodeDelay СЕКУНД робот взрывается.
         /// </summary>
         private void OnDied(Health dead)
         {
@@ -1161,14 +624,10 @@ namespace CarGame.Combat
             dying = true;
             deathTime = Time.time;
 
-            // Робот замирает: гасим скорость и блокируем движение до самого
-            // взрыва (Update в состоянии Death всё равно его не трогает).
             if (body != null) body.linearVelocity = Vector3.zero;
-            LockMovement(Mathf.Max(deathExplodeDelay, 10f));
 
-            // Запуск лупнутой анимации смерти булевым параметром. Остальные
-            // состояния-флаги (Idle/Walk/Run) гасим, иначе переход в смерть
-            // может не сработать или аниматор вернёт робота в бег.
+            // Запуск лупнутой анимации смерти булевым параметром. Флаги
+            // Idle/Walk/Run гасим, иначе переход в смерть может не сработать.
             if (animator != null && !string.IsNullOrEmpty(dieParameter))
             {
                 ResetOtherStateBools(null);
@@ -1182,17 +641,8 @@ namespace CarGame.Combat
         }
 
         /// <summary>
-        /// Таймер состояния Death: ждём deathExplodeDelay секунд, затем взрыв.
-        /// </summary>
-        private void UpdateDeathTimer()
-        {
-            if (Time.time - deathTime < deathExplodeDelay) return;
-            Explode();
-        }
-
-        /// <summary>
-        /// Взрыв по завершении таймера смерти: удаление самого робота и
-        /// появление на его месте префаба взрыва + спавн лута.
+        /// Взрыв по завершении таймера смерти: спавн лута, появление префаба
+        /// взрыва на месте робота, удаление самого робота.
         /// </summary>
         private void Explode()
         {
@@ -1207,7 +657,7 @@ namespace CarGame.Combat
                 GameObject effect = Instantiate(explosionPrefab, transform.position, Quaternion.identity);
 
                 // Страховка: если эффект урона по площади, он не должен
-                // «убить» уже удаляемый объект (образец DinamiteBot).
+                // «добить» уже удаляемый объект (образец DinamiteBot).
                 ExplosionEffect explosion = effect != null ? effect.GetComponent<ExplosionEffect>() : null;
                 if (explosion != null) explosion.Ignore(gameObject);
             }
@@ -1216,20 +666,17 @@ namespace CarGame.Combat
         }
 
         /// <summary>
-        /// Звуки начала состояния Death: ОДИН РАЗ звук смерти робота +
-        /// зацикленный звук тряски, который крутится всё время пока идёт
-        /// таймер до взрыва.
+        /// Звуки начала состояния Death: ОДИН РАЗ звук смерти + зацикленный
+        /// звук тряски, который крутится всё время пока идёт таймер до взрыва.
         /// </summary>
         private void PlayDeathSounds()
         {
             if (!playDeathSound) return;
 
-            // Клик смерти: свой клип из инспектора, иначе процедурный взрыв.
             AudioClip deathClip = deathSound != null ? deathSound : CarGame.Audio.ProceduralAudio.Explosion();
-            AudioSource.PlayClipAtPoint(deathClip, transform.position, deathSoundVolume);
+            if (deathClip != null)
+                AudioSource.PlayClipAtPoint(deathClip, transform.position, deathSoundVolume);
 
-            // Тряска: loop-источник на самом роботе (пока тот жив). Клип —
-            // свой из инспектора, иначе процедурный ShakeRattle.
             AudioClip rattle = shakeSound != null ? shakeSound : CarGame.Audio.ProceduralAudio.ShakeRattle();
             if (rattle == null) return;
 
