@@ -134,13 +134,17 @@ namespace CarGame.Combat
         private float attackPlayUntil;
         // ===== СОСТОЯНИЕ DEATH =====
         private bool dying;
+        // Флаг «взрыв уже запущен» — защита от двойного Explode().
+        private bool exploded;
         // Момент смерти. Таймер deathExplodeDelay — в РЕАЛЬНЫХ секундах,
-        // поэтому отсчёт ведётся по Time.unscaledTime (он не зависит от
-        // Time.timeScale): паузы и меню, замораживающие время игры
-        // (timeScale = 0), больше не «весят» как вечность и не растягивают
-        // взрыв. На обычной скорости (timeScale = 1) unscaledTime идёт
-        // один-в-один с реальным временем: 10 в инспекторе = 10 секунд.
-        private float deathTime;
+        // поэтому отсчёт ведётся по НАКОПЛЕННОМУ Time.unscaledDeltaTime, а не
+        // по разнице Time.unscaledTime. Причина: на некоторых сборках/сценах
+        // глобальное unscaledTime может быть рассинхронизировано (например,
+        // кастомный fixed/unscaled timestep), и тогда разница двух снимков
+        // вообще не равна прошедшему реальному времени — взрыв не наступал
+        // НИКОГДА, сколько бы ни ждали. Накопление дельты заведомо даёт ровно
+        // столько секунд, сколько прошло: 10 в инспекторе = 10 секунд.
+        private float deathElapsed;
         // Зацикленный источник звука тряски на время предсмертной агонии.
         private AudioSource deathRattleSource;
 
@@ -194,18 +198,26 @@ namespace CarGame.Combat
 
         private void Update()
         {
-            if (health == null || health.IsDead) return;
-
-            // Death: робот умер — трясётся в лупнутой анимации, НЕ двигается,
-            // НЕ атакует. Тикает только таймер до взрыва (звук тряски крутится
-            // сам через loop).
+            // ВАЖНО: проверка dying идёт ДО проверки IsDead. Health.IsDead
+            // становится true в том же кадре, что и событие Died (то есть ещё
+            // до первого Update после смерти). Старый код при первом же кадре
+            // после выхода на строку «IsDead — выходи» вообще переставал тикать
+            // (UpdateAnimator вызывается только из активных скриптов, поэтому
+            // смерть выглядела как «залипший первый кадр»). Теперь мёртвый,
+            // но ещё не взорвавшийся мечник продолжает крутить луп тряски и
+            // отсчёт до взрыва.
             if (dying)
             {
-                // Отсчёт в реальных секундах (unscaledTime), чтобы таймер не
-                // растягивался паузами/меню с Time.timeScale = 0.
-                if (Time.unscaledTime - deathTime >= deathExplodeDelay) Explode();
+                // Отсчёт в реальных секундах накоплением unscaledDeltaTime:
+                // паузы/меню с timeScale = 0 его не растягивают, а на обычной
+                // скорости 10 в инспекторе = ровно 10 секунд.
+                deathElapsed += Time.unscaledDeltaTime;
+                if (deathElapsed >= Mathf.Max(0f, deathExplodeDelay)) Explode();
+                ForceDeathAnimation();
                 return;
             }
+
+            if (health == null || health.IsDead) return;
 
             BaseUpdate();
 
@@ -634,14 +646,18 @@ namespace CarGame.Combat
         /// </summary>
         private void OnDied(Health dead)
         {
-            if (dying) return;
+            if (dying || exploded) return;
             dying = true;
-            deathTime = Time.unscaledTime;
+            deathElapsed = 0f;
 
             if (body != null) body.linearVelocity = Vector3.zero;
 
             // Запуск лупнутой анимации смерти булевым параметром. Флаги
             // Idle/Walk/Run гасим, иначе переход в смерть может не сработать.
+            // currentStateName сбрасываем — дальше ApplyState/луп смерти
+            // работают с аниматором начисто.
+            currentStateName = null;
+            attackPlaying = false;
             if (animator != null && !string.IsNullOrEmpty(dieParameter))
             {
                 ResetOtherStateBools(null);
@@ -655,12 +671,35 @@ namespace CarGame.Combat
         }
 
         /// <summary>
+        /// Поддержание лупа анимации смерти. Пока робот «умирает», каждый кадр:
+        /// гарантируем Bool-параметр dieParameter == true и прокручиваем
+        /// аниматор принудительно (UpdateAnimator), чтобы тряска реально
+        /// игралась по кругу, а не залипала на первом кадре. Вызов
+        /// UpdateAnimator из скрипта безопасен: Unity сама не вызывает его
+        /// второй раз в этом кадре (флаг сбрасывается при реплеи).
+        /// </summary>
+        private void ForceDeathAnimation()
+        {
+            if (animator == null || !animator.isActiveAndEnabled) return;
+            if (exploded) return;
+
+            if (!string.IsNullOrEmpty(dieParameter)
+                && GetParameterType(dieParameter) == AnimatorControllerParameterType.Bool)
+            {
+                animator.SetBool(dieParameter, true);
+            }
+
+            animator.UpdateAnimator(Time.deltaTime, 0);
+        }
+
+        /// <summary>
         /// Взрыв по завершении таймера смерти: спавн лута, появление префаба
         /// взрыва на месте робота, удаление самого робота.
         /// </summary>
         private void Explode()
         {
-            if (!dying) return;
+            if (!dying || exploded) return;
+            exploded = true;
             dying = false;
 
             StopDeathRattle();
