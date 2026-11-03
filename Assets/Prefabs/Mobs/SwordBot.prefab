@@ -1185,7 +1185,7 @@ MonoBehaviour:
   carDamageMultiplier: 1.4
   attackStopDuration: 2
   dieParameter: Die
-  deathExplodeDelay: 10
+  deathExplodeDelay: 0.1
   explosionPrefab: {fileID: 5316626115453355477, guid: 77450e5255e83d549b294f418ebf06f6, type: 3}
   deathSound: {fileID: 8300000, guid: 5f271bba2e2d94745a36798d4c8532e0, type: 3}
   shakeSound: {fileID: 8300000, guid: 878fc179faa977345894493f62abdef3, type: 3}
