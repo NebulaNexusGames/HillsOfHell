@@ -1,3 +1,4 @@
+using CarGame.AI;
 using CarGame.Effects;
 using CarGame.Player;
 using CarGame.Vehicle;
@@ -94,6 +95,21 @@ namespace CarGame.Combat
         [SerializeField] private float stuckDelay = 0.7f;
         [Tooltip("Сколько секунд держать объезд в выбранную сторону, с")]
         [SerializeField] private float detourDuration = 1.3f;
+
+        [Header("Дверные проёмы")]
+        [Tooltip("Летает ли этот моб (дрон): проверять проходимость проёма по своду, а не по порогу; разрешать снижение под потолок проёма")]
+        [SerializeField] private bool flyingRobot;
+        [Tooltip("Задержка смены целевого проёма, с. Не давать цели метаться между двумя соседними дверями на границе зон")]
+        [SerializeField] private float doorwaySwitchDelay = 0.5f;
+
+        // Активный дверной проём: ближайший проходимый проём впереди робота.
+        // Пока цель «в него» (робот смотрит с ним в одном секторе), коллайдеры
+        // стены/полотна этого проёма НЕ считаются препятствиями — робот идёт
+        // прямо в дверь, а не скользит вдоль косяка. Обновляется раз в 0.25 с.
+        private DoorwayVolume activeDoorway;
+        private DoorwayVolume pendingDoorway;
+        private float pendingDoorwaySince;
+        private float doorwayRefreshTime;
 
         protected Health health;
         protected PlayerController player;
