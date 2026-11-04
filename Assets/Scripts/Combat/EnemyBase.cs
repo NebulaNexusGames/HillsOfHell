@@ -523,7 +523,14 @@ namespace CarGame.Combat
         {
             if (!ignoreBlockersWhenDoorwayBlocked) return false;
             if (blockedDoorway == null || blockedDoorway.Equals(null)) return false;
-            if (Time.frameCount != lastBlockerFrame) return false;
+            // Дверь закрыта и не поддаётся автооткрытию (locked) — тоже повод
+            // продавливать, даже если формально моб в проём «пролезает».
+            bool doorwayRefusesToOpen = activeDoorway != null
+                && !activeDoorway.Equals(null)
+                && !activeDoorway.IsOpenOrAbsent
+                && activeDoorway.IsEffectivelyBlockedForGround;
+
+            if (!doorwayRefusesToOpen && Time.frameCount != lastBlockerFrame) return false;
             return IsDoorwayAhead(blockedDoorway, 0.2f);
         }
 
@@ -1355,6 +1362,19 @@ namespace CarGame.Combat
             currentPatrolPoint = null;
         }
 
+        private void SweepMarkBlocker(Collider blocker)
+        {
+            if (blocker == null) return;
+            if (IsSelf(blocker)) return;
+            if (IsTargetCollider(blocker)) return;
+
+            // Стена/полотно активного проёма, в который моб смотрит, — не
+            // препятствие: контакт с ней при входе в дверь штатный.
+            if (BlocksByActiveDoorway(blocker)) return;
+
+            lastBlockerFrame = Time.frameCount;
+        }
+
         protected Vector3 ComputeAvoidance(Vector3 desiredDirection)
         {
             Vector3 flat = Vector3.ProjectOnPlane(desiredDirection, Vector3.up);
@@ -1362,10 +1382,26 @@ namespace CarGame.Combat
 
             flat.Normalize();
 
-            // Аварийный режим у «непроходимого» дверного проёма: моб упёрся в
-            // препятствие и смотрит в дверь, в которую по габаритам не лезет
-            // (зона не настроена). Никакого скольжения вдоль стены и разворотов —
-            // идём ПРЯМО в проём, продавливая коллайдеры телом.
+            // Приоритет дверного проёма (по ТЗ): если перед мобом есть зона
+            // DoorwayVolume, моб НЕ отходит и не скользит вдоль стены — он
+            // направляется В САМ ПРОЁМ. Это работает и когда проём «проходимый»
+            // (активный), и когда моб в него не пролезает по габаритам
+            // (непроходимый): во втором случае включается режим игнорирования
+            // мешающих коллайдеров — моб идёт сквозь них прямо к двери.
+            if (blockedDoorway != null && IsDoorwayAhead(blockedDoorway, -0.2f))
+            {
+                Vector3 toDoor = Vector3.ProjectOnPlane(blockedDoorway.Center - FrontPosition, Vector3.up);
+                if (toDoor.sqrMagnitude > 0.01f) return toDoor.normalized;
+            }
+
+            if (activeDoorway != null && LooksThroughDoorway(activeDoorway))
+            {
+                Vector3 toActive = Vector3.ProjectOnPlane(activeDoorway.Center - FrontPosition, Vector3.up);
+                if (toActive.sqrMagnitude > 0.01f) return toActive.normalized;
+            }
+
+            // Аварийный режим «продавливания»: упёрся телом в препятствие и
+            // смотрит в непроходимый проём — идём строго в центр двери.
             if (ShouldIgnoreBlockers() && blockedDoorway != null)
             {
                 Vector3 toDoor = Vector3.ProjectOnPlane(blockedDoorway.Center - FrontPosition, Vector3.up);
@@ -1380,6 +1416,12 @@ namespace CarGame.Combat
             }
 
             Vector3 bodyOrigin = FrontPosition + Vector3.up * (bodyHalfHeight * 2f * (avoidHeightFactor - 0.5f));
+
+            // Аварийный режим: упёрся и смотрит в «непобедимый» проём (закрытая
+            // намертво дверь / зона не проходит по габаритам) — игнорируем ВСЕ
+            // мешающие коллайдеры на пути к двери, идём прямо телом.
+            if (ShouldIgnoreBlockers()) return flat;
+
             if (!IsBlocked(bodyOrigin, flat, halfExtents)) return flat;
 
             repathTime = Time.time + 0.35f;
@@ -1712,6 +1754,7 @@ namespace CarGame.Combat
                     overlapHit = sweepBuffer[i];
                     lastSweepNormal = MeasureContactNormal(sweepBuffer[i], origin, direction);
 
+                    SweepMarkBlocker(overlapHit);
                     return true;
                 }
 
@@ -1723,6 +1766,8 @@ namespace CarGame.Combat
             lastSweepHit = hit;
             overlapHit = hit.collider;
             lastSweepNormal = hit.collider != null ? MeasureContactNormal(hit.collider, hit.point, direction) : Vector3.zero;
+
+            if (hit.collider != null) SweepMarkBlocker(hit.collider);
 
             return hit.collider != null;
         }

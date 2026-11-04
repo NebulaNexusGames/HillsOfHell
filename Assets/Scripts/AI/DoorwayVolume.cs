@@ -225,11 +225,68 @@ namespace CarGame.AI
             return true;
         }
 
+        /// <summary>
+        /// Высота дрона над землёй, при которой корпус проходит сквозь СВОД
+        /// этого проёма (центр корпуса = свод минус половина корпуса минус
+        /// запас). Используется, когда цель ЛЕТИТ выше проёма (например, игрок
+        /// на крыше или сам дрон-преследователь) — тогда вместо снижения под
+        /// свод дрон вспарывает крышу здания на этой высоте. Возвращает false,
+        /// если свода нет (зона не настроена).
+        /// </summary>
+        public bool TryGetDroneAboveCeilingHeight(float robotHeight, out float passY)
+        {
+            passY = 0f;
+            if (zone == null) return false;
+
+            float ceilingTop = zone.bounds.max.y;
+            float halfBody = Mathf.Max(0.05f, robotHeight * 0.5f);
+            passY = ceilingTop + halfBody + Mathf.Max(0f, droneCeilingClearance);
+            return true;
+        }
+
+        /// <summary>
+        /// Над какой высотой надо лететь, чтобы ПРОЙТИ СКВОЗЬ этот проём
+        /// (между полом зоны и её сводом), для дрона с данной высотой корпуса.
+        /// Отличие от TryGetDronePassHeight: здесь нет проверки droneMinCeiling
+        /// — метод отвечает на вопрос «где дыра», а не «стоит ли туда лезть».
+        /// Если дыры нет (корпус не влезает между полом и сводом) — false.
+        /// </summary>
+        public bool TryGetDroneThroughHeight(float robotHeight, out float passY)
+        {
+            passY = 0f;
+            if (zone == null) return false;
+
+            float floorY = FloorY;
+            float ceilingTop = zone.bounds.max.y;
+            float halfBody = Mathf.Max(0.05f, robotHeight * 0.5f);
+
+            // Есть ли вообще щель между полом и сводом для корпуса?
+            if (ceilingTop - floorY <= robotHeight + 0.1f) return false;
+
+            // Центр: посередине щели, но не ниже пола+корпус и не выше свода-корпус.
+            float middle = (floorY + ceilingTop) * 0.5f;
+            float lowestAllowed = floorY + halfBody + 0.05f;
+            float highestAllowed = ceilingTop - halfBody - Mathf.Max(0f, droneCeilingClearance);
+            if (lowestAllowed > highestAllowed) return false;
+
+            passY = Mathf.Clamp(middle, lowestAllowed, highestAllowed);
+            return true;
+        }
+
         /// <summary>Есть ли у проёма полотно двери.</summary>
         public bool HasDoor => door != null;
 
         /// <summary>Открыто ли полотно (или полотна вовсе нет — открытая арка).</summary>
         public bool IsOpenOrAbsent => door == null || !door.IsClosed();
+
+        /// <summary>
+        /// Проём сейчас «для наземных мобов» закрыт чем-то, что нельзя открыть
+        /// штатно: locked-дверь, заклинившее полотно или зона выставлена так,
+        /// что прохода нет. EnemyBase использует это как сигнал включить
+        /// игнорирование мешающих коллайдеров («продавливание») — иначе моб
+        /// вечно скользил бы вдоль косяка.
+        /// </summary>
+        public bool IsEffectivelyBlockedForGround => door != null && door.IsClosed();
 
         /// <summary>
         /// Проверка геометрии прохода для конкретного моба: достаточно ли ширины
