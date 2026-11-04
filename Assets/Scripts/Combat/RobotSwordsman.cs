@@ -149,15 +149,58 @@ namespace CarGame.Combat
         private bool patrolTurning;
         // Момент, когда поворотная стоянка обязана закончиться (страховка).
         private float patrolTurnEndsAt;
-        // Целевое направление после поворота (к новой точке маршрута).
+        // Целевое направление после поворота (к новой точке маршрута) — то,
+        // куда указала «выбравшаяся» линия-сканер.
         private Vector3 patrolTurnTo;
-        [Tooltip("Максимальная длительность поворотной стоянки на патруле, с. " +
-                 "Жёсткий предохранитель: даже если поворот не завершился, робот " +
-                 "тронется через это время. Долгих остановок на маршруте быть не должно.")]
-        [SerializeField] private float patrolTurnMaxWait = 2f;
-        [Tooltip("Допустимая ошибка направления (косинус угла), при которой " +
-                 "поворот считается завершённым. 0.98 ≈ 11.5°.")]
-        [SerializeField] private float patrolTurnAlignDot = 0.98f;
+
+        // ===== СКАНЕР НАПРАВЛЕНИЯ НА ПОВОРОТНОЙ СТОЯНКЕ =====
+        // Пока робот стоит и выбирает направление, вокруг него крутится прямая
+        // рейкаст-линия (видна как Gizmos в Scene-вью): она сканирует пространство,
+        // сама прогоняет рейкасты и ищет свободное направление. Через случайное
+        // время сканирование останавливается, линия мигает зелёным и «замораживается»
+        // — ровно по ней робот и идёт дальше.
+        private const int ScanPhaseScanning = 0;   // линия крутится, ищем направление
+        private const int ScanPhaseLocked = 1;     // замирание с зелёным миганием
+        private const int ScanPhaseGo = 2;         // выбор зафиксирован, можно идти
+        private int scanPhase = ScanPhaseScanning;
+        // Текущий угол луча сканера (градусы, относительно forward робота).
+        private float scanAngleDegrees;
+        // Направление, выбранное сканером (в мировых координатах, плоское).
+        private Vector3 scanChosenDirection = Vector3.forward;
+        // Накопитель фазы сканирования (секунды реального времени).
+        private float scanElapsed;
+        // Сколько секунд сканер крутится перед заморозкой (рандом на каждую стоянку).
+        private float scanDuration = 1.5f;
+        // Когда сканер впервые увидел свободное направление (для ранней остановки).
+        private float scanFirstClearTime = -1f;
+        // Накопитель мигания зелёным в фазе Locked.
+        private float blinkElapsed;
+        // Флаг текущего кадра: линия-сканер активна (рисуем Gizmos-линию).
+        private bool gizmoLineActive;
+        // Линия-сканер видна и после завершения стоянки ещё несколько секунд —
+        // «выбранный курс» подсвечивается зелёным, затем гаснет.
+        private float scanFadeUntil;
+        // Концы линии для отрисовки в текущем кадре.
+        private Vector3 gizmoLineStart;
+        private Vector3 gizmoLineEnd;
+        // Цвет линии в текущем кадре (белый — крутится, зелёный — замерла).
+        private Color gizmoLineColor = Color.white;
+
+        [Tooltip("Сколько секунд максимум крутится линия-сканер, прежде чем " +
+                 "замереть и выбрать направление. Фактически берётся случайно " +
+                 "из диапазона [половина значения, полное значение].")]
+        [SerializeField] private float patrolScanDuration = 3f;
+        [Tooltip("Скорость вращения линии-сканера, градусов/с")]
+        [SerializeField] private float patrolScanSpeed = 160f;
+        [Tooltip("Минимальная длительность зелёного мигания заморозки, с. " +
+                 "Как только сканер нашёл свободное направление, он мигает " +
+                 "зелёным минимум столько секунд, затем робот трогается.")]
+        [SerializeField] private float patrolBlinkMinDuration = 1f;
+        [Tooltip("Длина линии-сканера (и глубина проверки рейкастом), м")]
+        [SerializeField] private float patrolScanLength = 6f;
+        [Tooltip("Максимальная длительность всей поворотной стоянки (скан + " +
+                 "мигание), с. Жёсткий предохранитель против вечных остановок.")]
+        [SerializeField] private float patrolTurnMaxWait = 7f;
         // Таймер пост-ударной стойки (Idle). Ставится в момент удара равным
         // attackStopDuration; пока > 0 — робот НЕ двигается и НЕ замахивается.
         private float strikeHoldTimer;
@@ -430,56 +473,57 @@ namespace CarGame.Combat
 
         /// <summary>
         /// ПАТРУЛЬ: робот ходит ВСЕГДА; встать он имеет право только чтобы
-        /// повернуть. Вызывается каждый кадр Update() в режиме патруля
-        /// (цели нет). Логика:
-        ///   1) Робот идёт к активной точке маршрута (patrolPoint или точка
-        ///      блуждания рядом со спавном). Идёт — анимация Walk.
-        ///   2) Дошёл до точки (либо упёрся в препятствие и почти остановился) —
-        ///      включается поворотная стоянка: движение запрещено, анимация
-        ///      честно переключается в Idle, робот на месте доворачивается к
-        ///      СЛЕДУЮЩЕЙ точке маршрута.
-        ///   3) Как только направление совпало с целевым (dot >= порога) либо
-        ///      сработал предохранитель patrolTurnMaxWait — стоянка снимается,
-        ///      робот немедленно трогается к новой точке (Walk).
-        /// Долгих беспричинных остановок больше быть не может: единственная
-        /// легальная причина стоять на патруле — незавершённый поворот,
-        /// ограниченный по времени.
+        /// повернуть. Поворот работает как «выбор направления лучом-сканером»:
+        ///   1) Робот идёт к активной точке маршрута (анимация Walk).
+        ///   2) Дошёл (или упёрся в препятствие) — честно встаёт в Idle и
+        ///      запускается сканер: прямая рейкаст-линия крутится вокруг робота
+        ///      (видна в Scene-вью как Gizmos), через случайное время замирает,
+        ///      мигает зелёным — и робот трогается ровно по ней.
+        ///   3) Направление фиксируется точкой маршрута ВДОЛЬ выбранного луча,
+        ///      поэтому после старта робот реально идёт по замороженной линии.
+        /// Долгих беспричинных остановок не бывает: предельная длительность
+        /// всей стоянки — patrolTurnMaxWait секунд (жёсткий предохранитель).
         /// </summary>
         private void UpdatePatrolTurnStop(ref Vector3 direction)
         {
             if (patrolTurning)
             {
-                // Стоим и доворачиваемся к новой точке маршрута.
-                bool aligned = patrolTurnTo.sqrMagnitude > 0.0001f
-                    && Vector3.Dot(transform.forward, patrolTurnTo) >= patrolTurnAlignDot;
-                bool failsafe = Time.time >= patrolTurnEndsAt;
+                UpdateDirectionScanner();
 
-                if (aligned || failsafe)
+                if (scanPhase == ScanPhaseGo)
                 {
-                    // Поворот завершён (или страховка сработала) — сразу идём.
+                    // Выбор зафиксирован: строим маршрут вдоль замороженной
+                    // линии и трогаемся немедленно.
                     patrolTurning = false;
-                    ForceNewPatrolRoute();
+                    // Замороженная линия остаётся видимой (зелёная) ещё пару
+                    // секунд — видно, куда именно робот решил пойти.
+                    scanFadeUntil = Time.time + 2f;
+                    SetPatrolRouteAlongChosenDirection();
                     direction = FlatTowards(PatrolDestinationNow());
                 }
                 else
                 {
-                    // Ещё крутимся на месте: направление для FaceDirection —
-                    // целевое, движение — нулевое (Update обнулит его по
-                    // mayMove == false).
-                    direction = patrolTurnTo;
+                    // Ещё стоим: робот доворачивается к текущему лучу сканера
+                    // (чтобы к моменту заморозки стоять почти ровно по нему),
+                    // движение запрещено — анимация честно в Idle.
+                    Vector3 facing = scanPhase == ScanPhaseLocked
+                        ? scanChosenDirection
+                        : CurrentScanWorldDirection();
+                    patrolTurnTo = facing;
+                    direction = facing;
                 }
 
                 return;
             }
 
-            // Обыжная ходьба по маршруту.
+            // Обычная ходьба по маршруту.
             Vector3 dest = PatrolDestinationNow();
             Vector3 toDest = FlatTowards(dest);
 
             if (toDest.sqrMagnitude < 0.0001f)
             {
-                // Точка достигнута — встаём и поворачиваем к следующей.
-                BeginPatrolTurnStop(NextPatrolDestinationExcludingCurrent());
+                // Точка достигнута — встаём и сканируем новое направление.
+                BeginPatrolTurnStop();
                 direction = patrolTurnTo;
                 return;
             }
@@ -491,7 +535,7 @@ namespace CarGame.Combat
                 : 0f;
             if (horizontalSpeed < MovingSpeedThreshold * 0.5f && !IsPathClear(toDest))
             {
-                BeginPatrolTurnStop(NextPatrolDestinationExcludingCurrent());
+                BeginPatrolTurnStop();
                 direction = patrolTurnTo;
                 return;
             }
@@ -499,48 +543,198 @@ namespace CarGame.Combat
             direction = toDest;
         }
 
-        /// <summary>Запустить поворотную стоянку к направлению target.</summary>
-        private void BeginPatrolTurnStop(Vector3 targetDirection)
+        /// <summary>
+        /// Запустить поворотную стоянку со сканером направления: робот встаёт
+        /// в Idle, вокруг него начинает крутиться прямая рейкаст-линия.
+        /// </summary>
+        private void BeginPatrolTurnStop()
         {
             patrolTurning = true;
-            patrolTurnTo = targetDirection;
-            // Жёсткий предел: дольше patrolTurnMaxWait секунд на поворот робот
+            scanPhase = ScanPhaseScanning;
+            scanElapsed = 0f;
+            blinkElapsed = 0f;
+            scanFirstClearTime = -1f;
+            // Случайная длительность сканирования на каждую стоянку:
+            // от половины patrolScanDuration до полного значения.
+            float maxScan = Mathf.Max(0.6f, patrolScanDuration);
+            scanDuration = Random.Range(maxScan * 0.5f, maxScan);
+            // Стартуем с произвольного угла, чтобы линия не «привязывалась»
+            // к предыдущему выбору.
+            scanAngleDegrees = Random.Range(0f, 360f);
+            scanChosenDirection = FlatTowards(transform.forward);
+            if (scanChosenDirection.sqrMagnitude < 0.0001f)
+                scanChosenDirection = Vector3.forward;
+            patrolTurnTo = scanChosenDirection;
+            // Жёсткий предел всей стоянки (скан + мигание): дольше робот
             // не имеет права стоять ни при каких обстоятельствах.
-            patrolTurnEndsAt = Time.time + Mathf.Max(0.2f, patrolTurnMaxWait);
-        }
-
-        /// <summary>Текущая цель патруля базового класса (точка маршрута или
-        /// точка блуждания).</summary>
-        private Vector3 PatrolDestinationNow()
-        {
-            return ResolveDestination();
+            patrolTurnEndsAt = Time.time + Mathf.Max(
+                scanDuration + Mathf.Max(0.4f, patrolBlinkMinDuration) + 0.5f,
+                patrolTurnMaxWait);
         }
 
         /// <summary>
-        /// Направление к НОВОЙ точке маршрута: текущая цель исключена из
-        /// выбора, чтобы поворот всегда был разворотом к следующему отрезку,
-        /// а не «назад к той же точке».
+        /// Шаг сканера направления (вызывается каждый кадр стоянки). Машинка
+        /// состояний: Scanning → Locked (зелёное мигание) → Go (поехали).
         /// </summary>
-        private Vector3 NextPatrolDestinationExcludingCurrent()
+        private void UpdateDirectionScanner()
         {
-            Vector3 current = PatrolDestinationNow();
+            float dt = Time.deltaTime;
 
-            // Базовый класс выбирает новую точку блуждания сам; подстрахуемся
-            // и вручную возьмём случайную точку в радиусе патруля вокруг
-            // спавна, отличную от текущей цели.
-            for (int attempt = 0; attempt < 8; attempt++)
+            // Страховка от вечной остановки: если фазы по какой-то причине не
+            // проходят, по истечении patrolTurnMaxWait идём по текущему лучу.
+            bool failsafe = Time.time >= patrolTurnEndsAt;
+
+            switch (scanPhase)
             {
-                Vector2 offset = Random.insideUnitCircle * PatrolRadius;
-                Vector3 candidate = SpawnPoint + new Vector3(offset.x, 0f, offset.y);
-                Vector3 flat = FlatTowards(candidate - transform.position);
-                if (flat.sqrMagnitude < 0.0001f) continue;
-                // Не разворачиваемся туда, куда уже шли (иначе поворот = 0°).
-                if (Vector3.Dot(flat, FlatTowards(current - transform.position)) > 0.9f) continue;
-                return flat.normalized;
+                case ScanPhaseScanning:
+                {
+                    scanElapsed += dt;
+                    // Линия крутится вокруг робота с постоянной скоростью.
+                    scanAngleDegrees += Mathf.Max(30f, patrolScanSpeed) * dt;
+                    if (scanAngleDegrees >= 360f) scanAngleDegrees -= 360f;
+
+                    Vector3 rayDir = CurrentScanWorldDirection();
+                    bool clear = IsScanRayClear(rayDir);
+                    if (clear && scanFirstClearTime < 0f) scanFirstClearTime = scanElapsed;
+
+                    // Заморозка: истекло случайное время сканирования И луч
+                    // сейчас свободен (не смотрит в стену). Если свободных
+                    // лучей долго нет — ждём; предохранитель страхует.
+                    bool timeUp = scanElapsed >= scanDuration;
+                    if ((timeUp && clear) || failsafe)
+                    {
+                        scanChosenDirection = rayDir;
+                        blinkElapsed = 0f;
+                        scanPhase = ScanPhaseLocked;
+                    }
+                    break;
+                }
+
+                case ScanPhaseLocked:
+                    blinkElapsed += dt;
+                    // Зелёное мигание длится минимум patrolBlinkMinDuration
+                    // секунд — робот «показывает» выбранный курс, затем идёт.
+                    if (blinkElapsed >= Mathf.Max(0.4f, patrolBlinkMinDuration) || failsafe)
+                        scanPhase = ScanPhaseGo;
+                    break;
+
+                default: // ScanPhaseGo
+                    break;
             }
 
-            Vector3 fallback = FlatTowards(transform.right);
-            return fallback.sqrMagnitude > 0.0001f ? fallback.normalized : transform.forward;
+            // Обновляем параметры отрисовки линии для Gizmos (текущий кадр).
+            gizmoLineActive = true;
+            Vector3 origin = FrontPosition + Vector3.up * 0.1f;
+            Vector3 shown = scanPhase == ScanPhaseScanning
+                ? CurrentScanWorldDirection()
+                : scanChosenDirection;
+            gizmoLineStart = origin;
+            gizmoLineEnd = origin + shown.normalized * Mathf.Max(1f, patrolScanLength);
+
+            if (scanPhase == ScanPhaseScanning)
+            {
+                // Пока линия крутится — она белая.
+                gizmoLineColor = Color.white;
+            }
+            else
+            {
+                // Замороженная линия мигает зелёным (~2 вспышки в секунду).
+                float pulse = 0.55f + 0.45f * Mathf.Sin(blinkElapsed * Mathf.PI * 4f);
+                gizmoLineColor = new Color(0.1f, 1f, 0.25f, pulse);
+            }
+        }
+
+        /// <summary>Мировое плоское направление текущего луча сканера.</summary>
+        private Vector3 CurrentScanWorldDirection()
+        {
+            Vector3 flatForward = FlatTowards(transform.forward);
+            if (flatForward.sqrMagnitude < 0.0001f) flatForward = Vector3.forward;
+            Quaternion yaw = Quaternion.AngleAxis(scanAngleDegrees, Vector3.up);
+            return yaw * flatForward.normalized;
+        }
+
+        /// <summary>
+        /// Проверка луча сканера рейкастом: свободно ли направление на длину
+        /// patrolScanLength. Свои коллайдеры и коллайдеры цели игнорируются —
+        /// как в штатной проверке базового класса.
+        /// </summary>
+        private bool IsScanRayClear(Vector3 worldDirection)
+        {
+            Vector3 flat = FlatTowards(worldDirection);
+            if (flat.sqrMagnitude < 0.0001f) return false;
+            flat.Normalize();
+
+            Vector3 origin = FrontPosition + Vector3.up * 0.5f;
+            float length = Mathf.Max(1f, patrolScanLength);
+            const float skin = 0.18f; // запас, чтобы не цеплять углы коллайдеров
+
+            if (Physics.SphereCast(origin, skin, flat, out RaycastHit hit, length,
+                                   Physics.AllLayers, QueryTriggerInteraction.Ignore))
+            {
+                Collider other = hit.collider;
+                if (other == null) return true;
+                if (other.transform.root == transform.root) return true; // сам робот
+                if (Target != null && !Target.Equals(null)
+                    && other.transform.root == Target.transform.root) return true; // цель
+                return false;
+            }
+
+            return true;
+        }
+
+        /// <summary>
+        /// Фиксация маршрута ВДОЛЬ замороженного луча: новая точка патруля
+        /// ставится на расстоянии ~70% радиуса по выбранному направлению,
+        /// поэтому робот после стоянки идёт ровно по линии, что показал сканер.
+        /// </summary>
+        private void SetPatrolRouteAlongChosenDirection()
+        {
+            ForceNewPatrolRoute(); // сброс старой точки и счётчика пройденного
+
+            // Снимаем любые плановые паузы базового класса: робот выбрал
+            // направление и должен ТРОГУТЬСЯ немедленно, а не досидевать
+            // чужую стоянку в Idle (иначе Walk появится с задержкой).
+            pauseUntil = Time.time;
+
+            Vector3 dir = FlatTowards(scanChosenDirection);
+            if (dir.sqrMagnitude < 0.0001f) return;
+            dir.Normalize();
+
+            float distance = Mathf.Clamp(PatrolRadius * 0.7f, 2f, 12f);
+
+            if (!HasPatrolPoints)
+            {
+                // Wander-режим: выставляем активную точку блуждания прямо по
+                // лучу — ResolvePatrolDestination вернёт её и робот пойдёт туда.
+                Vector3 destination = transform.position + dir * distance;
+                // Держим точку в разумной близости к спавну, чтобы не убежать.
+                Vector3 flatFromSpawn = FlatTowards(destination - SpawnPoint);
+                if (flatFromSpawn.magnitude > PatrolRadius)
+                {
+                    destination = SpawnPoint + flatFromSpawn.normalized * PatrolRadius * 0.9f;
+                    destination.y = SpawnPoint.y;
+                }
+                WanderDestination = destination;
+            }
+            // Режим точек маршрута: ForceNewPatrolRoute уже сбросил выбор,
+            // PickNextPatrolPoint в следующем кадре сам возьмёт ближайшую
+            // точку — направление движения задастся естественно.
+        }
+
+        /// <summary>Отрисовка линии-сканера (Scene-вью, включённые Gizmos).</summary>
+        private void OnDrawGizmos()
+        {
+            DrawScannerGizmo();
+        }
+
+        private void DrawScannerGizmo()
+        {
+            if (!gizmoLineActive) return;
+
+            Gizmos.color = gizmoLineColor;
+            Gizmos.DrawLine(gizmoLineStart, gizmoLineEnd);
+            // Маленькая сфера на конце — лучше видна «голова» луча.
+            Gizmos.DrawSphere(gizmoLineEnd, 0.08f);
         }
 
         private static Vector3 FlatTowards(Vector3 vector)
