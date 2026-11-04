@@ -544,6 +544,34 @@ namespace CarGame.Combat
         }
 
         /// <summary>
+        /// Текущая активная точка патрульного маршрута в flat-режиме мечника:
+        /// wander-точка базового класса (когда patrolPoints не назначены) либо
+        /// ближайшая назначенная точка маршрута. Используется только для
+        /// направления движения во время ходьбы — выбор точек по-прежнему
+        /// делает EnemyBase.ResolvePatrolDestination().
+        /// </summary>
+        private Vector3 PatrolDestinationNow()
+        {
+            if (!HasPatrolPoints) return WanderDestination;
+
+            Transform best = null;
+            float bestDist = float.MaxValue;
+            foreach (Transform point in PatrolPoints)
+            {
+                if (point == null) continue;
+                float dist = Vector3.ProjectOnPlane(
+                    point.position - transform.position, Vector3.up).sqrMagnitude;
+                if (dist < bestDist)
+                {
+                    bestDist = dist;
+                    best = point;
+                }
+            }
+
+            return best != null ? best.position : transform.position;
+        }
+
+        /// <summary>
         /// Запустить поворотную стоянку со сканером направления: робот встаёт
         /// в Idle, вокруг него начинает крутиться прямая рейкаст-линия.
         /// </summary>

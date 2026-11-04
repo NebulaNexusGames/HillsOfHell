@@ -195,6 +195,9 @@ namespace CarGame.Combat
 
         /// <summary>Есть ли у робота назначенные точки маршрута (patrolPoints).</summary>
         protected bool HasPatrolPoints => patrolPoints != null && patrolPoints.Length > 0;
+
+        /// <summary>Назначенные точки маршрута (могут быть null-элементы).</summary>
+        protected Transform[] PatrolPoints => patrolPoints;
         public Health Target { get; protected set; }
         public bool HasTarget => Target != null && !Target.IsDead;
 
