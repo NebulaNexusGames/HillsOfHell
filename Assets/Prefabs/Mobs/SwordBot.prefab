@@ -1089,9 +1089,9 @@ CapsuleCollider:
   m_Enabled: 1
   serializedVersion: 2
   m_Radius: 0.5
-  m_Height: 9.715404
+  m_Height: 9.305564
   m_Direction: 1
-  m_Center: {x: 0, y: 0.5633152, z: 0}
+  m_Center: {x: 0, y: 0.7682356, z: 0}
 --- !u!54 &4239960203685974670
 Rigidbody:
   m_ObjectHideFlags: 0
@@ -1185,6 +1185,7 @@ MonoBehaviour:
   carDamageMultiplier: 1.4
   attackStopDuration: 2
   dieParameter: Die
+  deathStateName: Death
   deathExplodeDelay: 10
   explosionPrefab: {fileID: 5316626115453355477, guid: 77450e5255e83d549b294f418ebf06f6, type: 3}
   deathSound: {fileID: 8300000, guid: 5f271bba2e2d94745a36798d4c8532e0, type: 3}
@@ -1210,9 +1211,13 @@ MonoBehaviour:
   scatterRadius: 0.5
   stepSound: {fileID: 8300000, guid: f16105201404fd942b37c0670ea71f09, type: 3}
   alertSound: {fileID: 8300000, guid: a643cd8d6f0423b43bf5c160f262abf0, type: 3}
+  attackSound: {fileID: 0}
   stepVolume: 0.35
   alertVolume: 0.8
+  attackVolume: 1
   targetMemoryDuration: 10
+  patrolTurnMaxWait: 2
+  patrolTurnAlignDot: 0.98
 --- !u!1 &4405899903749958003
 GameObject:
   m_ObjectHideFlags: 0
