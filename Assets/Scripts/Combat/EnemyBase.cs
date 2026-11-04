@@ -102,6 +102,8 @@ namespace CarGame.Combat
         [SerializeField] private bool flyingRobot;
         [Tooltip("Задержка смены целевого проёма, с. Не давать цели метаться между двумя соседними дверями на границе зон")]
         [SerializeField] private float doorwaySwitchDelay = 0.5f;
+        [Tooltip("Игнорировать препятствия при входе в дверной проём, если моб физически не проходит по габаритам (забыл выставить зону, узкий проход, кривая коробка). Моб продавливает коллайдеры телом и долетает/доходит до двери вместо вечного скольжения вдоль стены")]
+        [SerializeField] private bool ignoreBlockersWhenDoorwayBlocked = true;
 
         // Активный дверной проём: ближайший проходимый проём впереди робота.
         // Пока цель «в него» (робот смотрит с ним в одном секторе), коллайдеры
@@ -111,6 +113,14 @@ namespace CarGame.Combat
         private DoorwayVolume pendingDoorway;
         private float pendingDoorwaySince;
         private float doorwayRefreshTime;
+        // «Блокированный» проём: ближайший проём, который НЕ проходит по
+        // габаритам (дизайнер не выставил зону, узкая арка и т.п.). Нужен для
+        // аварийного режима: если моб упёрся в стену рядом с таким проёмом и
+        // смотрит в него — препятствия игнорируются, моб продавливает коллайдеры
+        // телом и идёт в дверь, а не буксует вдоль косяка вечно.
+        private DoorwayVolume blockedDoorway;
+        // Кадр, в котором последний свип зацепил что-то чужое (для «продавливания»).
+        private int lastBlockerFrame = -100;
 
         protected Health health;
         protected PlayerController player;
@@ -404,6 +414,12 @@ namespace CarGame.Combat
             DoorwayVolume best = null;
             float bestDistance = float.MaxValue;
 
+            // Ближайший проём, в который моб геометрически НЕ проходит
+            // (не выставлена зона/габариты не сходятся). Нужен для аварийного
+            // «продавливания» препятствий — см. ShouldIgnoreBlockers().
+            DoorwayVolume nearestBlocked = null;
+            float nearestBlockedDistance = float.MaxValue;
+
             IReadOnlyList<DoorwayVolume> all = DoorwayVolume.All;
             for (int i = 0; i < all.Count; i++)
             {
@@ -417,25 +433,32 @@ namespace CarGame.Combat
                 // рядом или между роботом и целью. Дальше DetectRange — мимо.
                 if (distance > DetectRange + 4f) continue;
 
-                if (!doorway.FitsRobot(RobotDiameter, RobotHeight, stepUpHeight, flyingRobot)) continue;
+                bool fits = doorway.FitsRobot(RobotDiameter, RobotHeight, stepUpHeight, flyingRobot);
+
+                if (!fits)
+                {
+                    // Не прошедший проём помечаем как «аварийный», если он
+                    // реально рядом и впереди — иначе игнорирование стен
+                    // включалось бы у любой двери за спиной.
+                    if (distance <= 8f && IsDoorwayAhead(doorway, -0.2f)
+                        && distance < nearestBlockedDistance)
+                    {
+                        nearestBlocked = doorway;
+                        nearestBlockedDistance = distance;
+                    }
+                    continue;
+                }
 
                 // Проём «впереди» робота либо он уже почти внутри него. Иначе
                 // робот таргетил бы двери за спиной и разворачивался к ним.
-                if (distance > 1.5f)
-                {
-                    Vector3 flat = Vector3.ProjectOnPlane(toDoor, Vector3.up);
-                    if (flat.sqrMagnitude > 0.01f)
-                    {
-                        Vector3 forward = Vector3.ProjectOnPlane(transform.forward, Vector3.up);
-                        if (forward.sqrMagnitude > 0.01f
-                            && Vector3.Dot(forward.normalized, flat.normalized) < -0.35f) continue;
-                    }
-                }
+                if (distance > 1.5f && !IsDoorwayAhead(doorway, -0.35f)) continue;
 
                 if (distance >= bestDistance) continue;
                 best = doorway;
                 bestDistance = distance;
             }
+
+            blockedDoorway = nearestBlocked;
 
             if (best == null)
             {
@@ -465,6 +488,43 @@ namespace CarGame.Combat
             activeDoorway = best;
             pendingDoorway = null;
             best.TryOpenForEnemy(transform.position);
+        }
+
+        /// <summary>
+        /// Находится ли проём «впереди» робота: горизонтальное направление на
+        /// его центр не расходится с носом сильнее порога (dot > minDot).
+        /// distance <= 1.5 м считается «и так рядом» — вызывающий метод сам
+        /// решает, нужна ли проверка направления.
+        /// </summary>
+        private bool IsDoorwayAhead(DoorwayVolume doorway, float minDot)
+        {
+            Vector3 toDoor = doorway.Center - transform.position;
+            Vector3 flat = Vector3.ProjectOnPlane(toDoor, Vector3.up);
+            if (flat.sqrMagnitude < 0.01f) return true;
+
+            Vector3 forward = Vector3.ProjectOnPlane(transform.forward, Vector3.up);
+            if (forward.sqrMagnitude < 0.01f) return true;
+
+            return Vector3.Dot(forward.normalized, flat.normalized) >= minDot;
+        }
+
+        /// <summary>
+        /// Аварийный режим «продавливания»: моб реально упёрся в препятствие
+        /// (последний свип зацепил чужой коллайдер в этом же кадре), рядом
+        /// стоит дверной проём, в который моб по габаритам НЕ проходит
+        /// (зона не выставлена / узкая арка), и моб смотрит примерно в него.
+        /// В этом случае препятствия перестают быть препятствиями для выбора
+        /// направления: мечник/камикадзе идут прямо в дверь телом, дрон —
+        /// корпусом, вместо вечного скольжения вдоль косяка. Требование
+        /// «был контакт в этом кадре» важно: без него робот игнорировал бы
+        /// стены, просто проходя мимо любой двери вплотную к зданию.
+        /// </summary>
+        private bool ShouldIgnoreBlockers()
+        {
+            if (!ignoreBlockersWhenDoorwayBlocked) return false;
+            if (blockedDoorway == null || blockedDoorway.Equals(null)) return false;
+            if (Time.frameCount != lastBlockerFrame) return false;
+            return IsDoorwayAhead(blockedDoorway, 0.2f);
         }
 
         /// <summary>
@@ -1009,6 +1069,13 @@ namespace CarGame.Combat
 
         protected Vector3 ResolveDestination()
         {
+            // Аварийный режим: упёрся и смотрит в «непроходимый» проём — цель
+            // игнорируется, идём строго в центр двери (продавливая препятствия).
+            if (ShouldIgnoreBlockers() && blockedDoorway != null)
+            {
+                return DoorwayAimPoint(blockedDoorway);
+            }
+
             if (HasTarget && Target != null && !Target.Equals(null))
             {
                 Vector3 targetPosition = Target.transform.position;
@@ -1294,6 +1361,16 @@ namespace CarGame.Combat
             if (flat.sqrMagnitude < 0.0001f) return desiredDirection;
 
             flat.Normalize();
+
+            // Аварийный режим у «непроходимого» дверного проёма: моб упёрся в
+            // препятствие и смотрит в дверь, в которую по габаритам не лезет
+            // (зона не настроена). Никакого скольжения вдоль стены и разворотов —
+            // идём ПРЯМО в проём, продавливая коллайдеры телом.
+            if (ShouldIgnoreBlockers() && blockedDoorway != null)
+            {
+                Vector3 toDoor = Vector3.ProjectOnPlane(blockedDoorway.Center - FrontPosition, Vector3.up);
+                if (toDoor.sqrMagnitude > 0.01f) return toDoor.normalized;
+            }
 
             if (detourActive)
             {
@@ -1644,6 +1721,7 @@ namespace CarGame.Combat
             Physics.BoxCast(origin, extents, direction, out RaycastHit hit, Quaternion.identity, distance, obstacleMask, QueryTriggerInteraction.Ignore);
 
             lastSweepHit = hit;
+            overlapHit = hit.collider;
             lastSweepNormal = hit.collider != null ? MeasureContactNormal(hit.collider, hit.point, direction) : Vector3.zero;
 
             return hit.collider != null;
