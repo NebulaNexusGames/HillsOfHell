@@ -407,10 +407,21 @@ namespace CarGame.Combat
         /// он пытается пройти (проходимый или аварийно-блокированный). Истинно
         /// и когда включено продавливание: у такой двери запрещены плановые
         /// стоянки патруля и развороты.</summary>
-        protected bool HasDoorwayToEnter =>
-            (activeDoorway != null && !activeDoorway.Equals(null))
-            || (blockedDoorway != null && !blockedDoorway.Equals(null)
-                && IsDoorwayAhead(blockedDoorway, -0.2f));
+        protected bool HasDoorwayToEnter => DoorwayToEnter != null;
+
+        /// <summary>Проём, в который моб сейчас пытается войти (или null).
+        /// Наследники используют его цель как «законный свободный курс»:
+        /// к двери не применяются плановые стоянки, замедления и сканер.</summary>
+        protected DoorwayVolume DoorwayToEnter
+        {
+            get
+            {
+                if (activeDoorway != null && !activeDoorway.Equals(null)) return activeDoorway;
+                if (blockedDoorway != null && !blockedDoorway.Equals(null)
+                    && IsDoorwayAhead(blockedDoorway, -0.2f)) return blockedDoorway;
+                return null;
+            }
+        }
 
         /// <summary>Последняя точка маршрута блуждания базового класса
         /// (wanderTarget) для дочерних классов (режим сканера мечника).</summary>
@@ -536,7 +547,7 @@ namespace CarGame.Combat
             if (best == activeDoorway)
             {
                 pendingDoorway = null;
-                best.TryOpenForEnemy(transform.position);
+                RequestDoorOpen(best);
                 return;
             }
 
@@ -553,7 +564,23 @@ namespace CarGame.Combat
 
             activeDoorway = best;
             pendingDoorway = null;
-            best.TryOpenForEnemy(transform.position);
+            RequestDoorOpen(best);
+        }
+
+        /// <summary>
+        /// Просит дверь проёма открыться ради моба. Если моб упёрся в полотно
+        /// (свежий контакт свипа) — передаёт точку касания: закрытая дверь при
+        /// этом ОТКИДЫВАЕТСЯ от моба, а после нескольких безрезультатных
+        /// попыток выламывается (см. DoorwayVolume.TryOpenForEnemy).
+        /// </summary>
+        private void RequestDoorOpen(DoorwayVolume doorway)
+        {
+            if (doorway == null || doorway.Equals(null)) return;
+
+            bool recentContact = Time.frameCount - lastBlockerFrame <= 2
+                || Time.time - blockersIgnoreUntil < IgnoreBlockersHoldTime;
+            Vector3 contact = recentContact ? lastSweepHit.point : Vector3.zero;
+            doorway.TryOpenForEnemy(transform.position, contact, ignoreBlockersNow);
         }
 
         /// <summary>
@@ -1241,7 +1268,7 @@ namespace CarGame.Combat
         /// половину ширины прохода в сторону робота, чтобы моб не остановился
         /// ровно в дверях.
         /// </summary>
-        private Vector3 DoorwayAimPoint(DoorwayVolume doorway)
+        protected Vector3 DoorwayAimPoint(DoorwayVolume doorway)
         {
             Vector3 center = doorway.Center;
 

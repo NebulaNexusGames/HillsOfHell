@@ -21,12 +21,14 @@ namespace CarGame.Buildings
 
         public bool CanInteract(PlayerInteractor interactor)
         {
-            return door != null;
+            // Выломанная дверь — свободное физическое тело: ручка больше
+            // не взаимодействует (нет смысла «открывать» то, что сорвали с петель).
+            return door != null && !door.IsBroken;
         }
 
         public void Interact(PlayerInteractor interactor)
         {
-            if (door == null) return;
+            if (door == null || door.IsBroken) return;
             door.Toggle();
         }
     }
