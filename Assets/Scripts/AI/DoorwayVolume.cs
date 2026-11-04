@@ -1,0 +1,274 @@
+using System.Collections.Generic;
+using CarGame.Buildings;
+using CarGame.Player;
+using CarGame.Vehicle;
+using UnityEngine;
+
+namespace CarGame.AI
+{
+    /// <summary>
+    /// Зона дверного проёма для ИИ мобов. Вешается на дочерний ПУСТОЙ объект
+    /// с BoxCollider, помеченным как Is Trigger (без Rigidbody), ровно на сам
+    /// проём: коробка должна целиком перекрывать проход по ширине и высоте и
+    /// немного выступать с обеих сторон стены (25-50 см), чтобы робот успел
+    /// затаргетиться до входа.
+    ///
+    /// Что даёт мобам (через EnemyBase):
+    /// 1. Проходимость: стена вокруг проёма считается препятствием только пока
+    ///    мобиль НЕ смотрит в этот проём. Как только ближайший проём найден —
+    ///    «стена» с ним перестаёт мешать свипам, сканированию направлений и
+    ///    проверкам застревания, и любой наземный моб идёт через дверь прямо,
+    ///    а не скользит вдоль косяка.
+    /// 2. Целеуказание: ResolveDestination() у всех мобов целится в центр
+    ///    проёма вместо точки цели за стеной — маршрут всегда через дверь.
+    /// 3. Двери: при приближении моба BuildingDoor открывается автоматически
+    ///    (если рядом нет игрока — приоритет у игрока). Мобы не ломают двери
+    ///    телом и не застревают о закрытое полотно.
+    /// 4. Зрение: линия взгляда сквозь ОТКРЫТЫЙ проём не блокируется его же
+    ///    стеной/полотном — иначе моб «терял» игрока в момент входа в дверь.
+    /// 5. Дрон: умеет снижаться к порогу прохода и вспарывать потолок проёма
+    ///    (см. TryDronePassClearance в RobotDrone) — если высота потолка ниже
+    ///    droneMinCeiling, дрон не пытается лететь через проём.
+    ///
+    /// Настройка в редакторе (для дизайнера):
+    /// - Создать дочерний объект "Doorway" у двери/проёма, добавить Box Collider,
+    ///   включить Is Trigger, повесить этот скрипт.
+    /// - PassAxis — локальная ось тонкой стенки (обычно X или Z).
+    /// - CeilingOverride — только если реальный потолок проёма ниже триггер-коробки
+    ///   (например, посреди проёма нависает козырёк); обычно оставить 0 = авто.
+    /// - Door Reference заполняется сам из родителей (BuildingDoor), можно
+    ///   указать вручную.
+    /// </summary>
+    [DisallowMultipleComponent]
+    public class DoorwayVolume : MonoBehaviour
+    {
+        public enum PassAxis
+        {
+            [InspectorName("Локальная X")] LocalX = 0,
+            [InspectorName("Локальная Y")] LocalY = 1,
+            [InspectorName("Локальная Z")] LocalZ = 2
+        }
+
+        [Header("Проход")]
+        [Tooltip("Ось прохода — локальная ось тонкой стороны коробки (нормаль стены в проёме). Стену вокруг проёма мобы считают препятствием, пока не смотрят в эту зону")]
+        [SerializeField] private PassAxis passAxis = PassAxis.LocalX;
+        [Tooltip("Запас по горизонтали прохода, м. Прибавляется к полуширине зоны при проверке габаритов робота. Чуть больше 0 — терпимее к криво выставленной коробке")]
+        [SerializeField] private float horizontalMargin = 0.1f;
+        [Tooltip("Допуск по высоте порога, м. Робот считается способным переступить порог двери, если он выше его шага (stepUpHeight) не более чем на это значение")]
+        [SerializeField] private float thresholdTolerance = 0.1f;
+
+        [Header("Потолок проёма (для дрона)")]
+        [Tooltip("Реальная высота свода проёма над полом зоны, м. 0 = авто: берётся верх триггер-коробки. Задавай вручную, если посреди проёма нависает козырёк/балка ниже коробки")]
+        [SerializeField] private float ceilingOverride = 0f;
+        [Tooltip("Минимальная высота свода, которую способен пройти дрон, м. Потолок ниже — дрон не пытается лететь через проём (разворачивается наружу)")]
+        [SerializeField] private float droneMinCeiling = 0.9f;
+        [Tooltip("Запас дрона под сводом проёма, м: целевая точка снижения = свод минус корпус дрона минус этот запас")]
+        [SerializeField] private float droneCeilingClearance = 0.3f;
+
+        [Header("Дверь")]
+        [Tooltip("Полотно двери, принадлежащее этому проёму. Если пусто — ищется BuildingDoor среди родителей автоматически")]
+        [SerializeField] private BuildingDoor doorReference;
+        [Tooltip("Открывать дверь при приближении моба. Выключи для открытых арок без полотна")]
+        [SerializeField] private bool openForEnemies = true;
+        [Tooltip("Радиус, с которого моб открывает дверь, м")]
+        [SerializeField] private float triggerRange = 6f;
+
+        /// <summary>Все проёмы сцены (регистрация Awake/OnDestroy).</summary>
+        public static IReadOnlyList<DoorwayVolume> All => volumes;
+
+        private static readonly List<DoorwayVolume> volumes = new List<DoorwayVolume>();
+
+        private BoxCollider zone;
+        private Vector3 localHalf;
+        private int axisIndex;
+        private BuildingDoor door;
+        private Transform doorVisual;
+        private float nextDoorCheckTime;
+
+        private void Awake()
+        {
+            zone = GetComponent<BoxCollider>();
+            if (zone == null)
+                zone = GetComponentInChildren<BoxCollider>();
+
+            if (zone == null)
+            {
+                Debug.LogError($"[DoorwayVolume] '{name}': нет Box Collider — зона прохода не работает.", this);
+                return;
+            }
+
+            // Триггер обязателен: физика роботов не должна отталкиваться от зоны.
+            zone.isTrigger = true;
+
+            axisIndex = (int)passAxis;
+            Vector3 scale = transform.lossyScale;
+            Vector3 size = zone.size;
+            localHalf = new Vector3(
+                Mathf.Abs(size.x * scale.x) * 0.5f,
+                Mathf.Abs(size.y * scale.y) * 0.5f,
+                Mathf.Abs(size.z * scale.z) * 0.5f);
+
+            door = doorReference != null ? doorReference : GetComponentInParent<BuildingDoor>();
+            doorVisual = door != null ? door.transform : null;
+
+            volumes.Add(this);
+        }
+
+        private void OnDestroy()
+        {
+            volumes.Remove(this);
+        }
+
+        /// <summary>Центр проёма — точка, в которую мобы целятся при обходе стены.</summary>
+        public Vector3 Center => zone != null ? zone.bounds.center : transform.position;
+
+        /// <summary>Горизонтальная ширина прохода, м (сумма двух горизонтальных полуосей кроме оси прохода).</summary>
+        public float PassageWidth
+        {
+            get
+            {
+                if (zone == null) return 0f;
+                float a = axisIndex == 0 ? localHalf.y : localHalf.x;
+                float b = axisIndex == 2 ? localHalf.y : localHalf.z;
+                return (a + b) * 2f;
+            }
+        }
+
+        /// <summary>Высота свода проёма над полом зоны, м.</summary>
+        public float CeilingHeight
+        {
+            get
+            {
+                if (ceilingOverride > 0.01f) return ceilingOverride;
+                if (zone == null) return 0f;
+                return zone.bounds.max.y - zone.bounds.min.y;
+            }
+        }
+
+        public float FloorY => zone != null ? zone.bounds.min.y : transform.position.y;
+
+        /// <summary>Минимальная высота свода, проходимая дроном, м.</summary>
+        public float DroneMinCeiling => droneMinCeiling;
+
+        /// <summary>Запас дрона под сводом, м.</summary>
+        public float DroneCeilingClearance => droneCeilingClearance;
+
+        /// <summary>Есть ли у проёма полотно двери.</summary>
+        public bool HasDoor => door != null;
+
+        /// <summary>Открыто ли полотно (или полотна вовсе нет — открытая арка).</summary>
+        public bool IsOpenOrAbsent => door == null || !door.IsClosed();
+
+        /// <summary>
+        /// Проверка геометрии прохода для конкретного моба: достаточно ли ширины
+        /// и высоты, и может ли моб переступить порог.
+        /// </summary>
+        public bool FitsRobot(float robotDiameter, float robotHeight, float robotStepUp, bool isFlying)
+        {
+            if (zone == null) return false;
+
+            if (PassageWidth <= 0.01f) return false;
+            if (robotDiameter > PassageWidth + horizontalMargin * 2f) return false;
+
+            // Летающему мобу нужен только свод; наземному — ещё и переступаемый порог.
+            if (!isFlying && zone.bounds.min.y - robotStepUp > FloorY + thresholdTolerance + 0.001f)
+                return false;
+
+            float clearanceNeeded = isFlying
+                ? Mathf.Max(droneMinCeiling, robotHeight + droneCeilingClearance)
+                : robotHeight;
+            if (CeilingHeight < clearanceNeeded) return false;
+
+            return true;
+        }
+
+        /// <summary>
+        /// Является ли коллайдер «стеной этого проёма»: принадлежит ли он тому же
+        /// объекту/иерархии, что и зона (родитель/потомок), либо это полотно
+        /// связанной двери. Такие коллайдеры EnemyBase перестаёт считать
+        /// препятствиями, когда моб смотрит в данный проём, и не считает
+        /// блокерами зрения сквозь него.
+        /// </summary>
+        public bool BelongsToStructure(Collider candidate)
+        {
+            if (candidate == null) return false;
+            // Сама триггер-зона запросами с QueryTriggerInteraction.Ignore не находится.
+            if (zone != null && candidate == zone) return false;
+
+            Transform t = candidate.transform;
+            Transform self = transform;
+
+            if (t == self || t.IsChildOf(self)) return true;
+            if (self.IsChildOf(t)) return true;
+
+            // Полотно двери относится к проёму всегда (оно и есть преграда в закрытом виде).
+            if (doorVisual != null && (t == doorVisual || t.IsChildOf(doorVisual))) return true;
+
+            return false;
+        }
+
+        /// <summary>
+        /// Попытка открыть дверь проёма ради моба. Вызывается из EnemyBase при
+        /// таргете проёма. Условие: полотно есть, закрыто, никто из игроков не
+        /// рядом (приоритет взаимодействия с дверью у игрока).
+        /// </summary>
+        public void TryOpenForEnemy(Vector3 robotPosition)
+        {
+            if (!openForEnemies || door == null) return;
+            if ((Center - robotPosition).sqrMagnitude > triggerRange * triggerRange) return;
+            if (!door.IsClosed()) return;
+
+            // Не выдёргивать дверь из-под игрока: проверка раз в 0.5 с, не каждый кадр.
+            if (Time.time < nextDoorCheckTime) return;
+            nextDoorCheckTime = Time.time + 0.5f;
+
+            if (IsAnyPlayerNearby()) return;
+
+            door.Open();
+        }
+
+        private bool IsAnyPlayerNearby()
+        {
+            PlayerController[] players = FindObjectsByType<PlayerController>(FindObjectsSortMode.None);
+            for (int i = 0; i < players.Length; i++)
+            {
+                PlayerController p = players[i];
+                if (p == null || p.Equals(null)) continue;
+
+                Vector3 pos = p.transform.position;
+                if ((pos - Center).sqrMagnitude <= triggerRange * triggerRange) return true;
+
+                // Игрок за рулём: считаем и позицию машины.
+                CarController car = p.CurrentVehicle;
+                if (car != null && !car.Equals(null)
+                    && (car.transform.position - Center).sqrMagnitude <= triggerRange * triggerRange)
+                    return true;
+            }
+
+            return false;
+        }
+
+#if UNITY_EDITOR
+        private void OnDrawGizmosSelected()
+        {
+            BoxCollider box = zone != null ? zone : GetComponent<BoxCollider>();
+            if (box == null) return;
+
+            Gizmos.color = new Color(0.2f, 1f, 0.4f, 0.9f);
+            Gizmos.DrawWireCube(box.bounds.center, box.bounds.size);
+
+            Gizmos.color = new Color(0.2f, 1f, 0.4f, 0.35f);
+            Gizmos.DrawCube(box.bounds.center, box.bounds.size);
+
+            // Ось прохода: стрелка через проём.
+            Vector3 dir = transform.TransformDirection(axisIndex switch
+            {
+                0 => Vector3.right,
+                1 => Vector3.up,
+                _ => Vector3.forward
+            });
+            Gizmos.DrawLine(box.bounds.center - dir, box.bounds.center + dir);
+        }
+#endif
+    }
+}
