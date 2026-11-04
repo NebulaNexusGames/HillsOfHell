@@ -187,11 +187,43 @@ namespace CarGame.AI
         /// <summary>Центр проёма на уровне пола (порог/точка входа наземных мобов).</summary>
         public Vector3 GroundCenter => new Vector3(Center.x, FloorY, Center.z);
 
+        /// <summary>Коллайдер-коробка зоны проёма (для расчётов габаритов ИИ).</summary>
+        public Collider ZoneCollider => zone;
+
         /// <summary>Минимальная высота свода, проходимая дроном, м.</summary>
         public float DroneMinCeiling => droneMinCeiling;
 
         /// <summary>Запас дрона под сводом, м.</summary>
         public float DroneCeilingClearance => droneCeilingClearance;
+
+        /// <summary>
+        /// Целевая высота полёта (мировая Y) для дрона с данным диаметром и
+        /// высотой корпуса, проходящего под сводом этого проёма. Считается от
+        /// нижней границы зоны (пол): центр корпуса ставится так, чтобы верх
+        /// корпуса не доставал до свода на droneCeilingClearance. Если свод
+        /// ниже droneMinCeiling — проход для дрона закрыт и метод вернёт false.
+        /// </summary>
+        public bool TryGetDronePassHeight(float robotDiameter, float robotHeight, out float passY)
+        {
+            passY = 0f;
+
+            float ceiling = CeilingHeight;
+            if (ceiling <= 0.01f) return false;
+            if (ceiling < droneMinCeiling) return false;
+
+            float halfBody = Mathf.Max(0.05f, robotHeight * 0.5f);
+            float maxY = zone != null ? zone.bounds.max.y : Center.y + ceiling * 0.5f;
+
+            // Верх корпуса под сводом с запасом; низ корпуса — не ниже пола зоны.
+            passY = maxY - halfBody - Mathf.Max(0f, droneCeilingClearance);
+            float floorY = FloorY + halfBody + 0.05f;
+            if (passY < floorY) passY = floorY;
+
+            // Проход физически невозможен: корпус не влезает между полом и сводом.
+            if (maxY - floorY - halfBody < droneCeilingClearance * 0.5f) return false;
+
+            return true;
+        }
 
         /// <summary>Есть ли у проёма полотно двери.</summary>
         public bool HasDoor => door != null;
