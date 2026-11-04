@@ -33,6 +33,12 @@ namespace CarGame.Buildings
         [Tooltip("Насколько сильно игрок может толкать дверь телом")]
         [SerializeField] private float playerPushForce = 90f;
 
+        [Header("Выламывание мобами")]
+        [Tooltip("Скорость замахивания полотна при ударе моба, градусов/с")]
+        [SerializeField] private float kickSpeed = 260f;
+        [Tooltip("Урон (условный), при котором дверь выламывается сразу: взрывы и тяжёлые попадания. 0 — выламывать только тараном мобов")]
+        [SerializeField] private float breakDamage = 45f;
+
         [Header("Урон")]
         [Tooltip("Урон, полностью открывающий дверь")]
         [SerializeField] private float damageForFullOpen = 50f;
@@ -92,6 +98,21 @@ namespace CarGame.Buildings
         private float settleTimer;
         private bool locked = true;
         private bool wasOpen;
+
+        // --- Выламывание (ТЗ: моб, упорно не проходящий в закрытую дверь,
+        // откидывает полотно ОТ СЕБЯ; после выламывания дверь — свободное
+        // физическое тело, ручка больше не взаимодействует) ---
+        [Tooltip("Замах полотна при ударе моба: сколько секунд полотно летит\n" +
+                 "в сторону от таранящего его моба. За это время оно успевает\n" +
+                 "отойти на четверть оборота и дальше движется по инерции.")]
+        [SerializeField] private float kickSwingDuration = 0.35f;
+        // Момент, до которого скрипт активно закручивает полотно вокруг петель
+        // (удар/выламывание). После — дверь полностью свободна: физика сама
+        // решает, куда ей падать и крутиться.
+        private float kickUntil;
+        private float kickAngularVelocity;
+        // Полотно выломано: скрипт больше НЕ управляет дверью вообще.
+        public bool IsBroken { get; private set; }
 
         private void Awake()
         {
