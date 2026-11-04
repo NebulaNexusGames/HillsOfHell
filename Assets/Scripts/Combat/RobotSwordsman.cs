@@ -1,6 +1,7 @@
 using CarGame.Player;
 using CarGame.Vehicle;
 using UnityEngine;
+using UnityEngine.Animations;
 
 namespace CarGame.Combat
 {
@@ -112,10 +113,15 @@ namespace CarGame.Combat
         [SerializeField] private AudioClip stepSound;
         [Tooltip("Свой клип сигнала обнаружения цели (звучит в момент захвата). Пусто — процедурный звук")]
         [SerializeField] private AudioClip alertSound;
+        [Tooltip("Звук атаки — проигрывается ОДИН РАЗ в момент каждого замаха. " +
+                 "Пусто — процедурный свист удара")]
+        [SerializeField] private AudioClip attackSound;
         [Tooltip("Громкость шагов")]
         [SerializeField][Range(0f, 2f)] private float stepVolume = 0.35f;
         [Tooltip("Громкость сигнала обнаружения")]
         [SerializeField][Range(0f, 2f)] private float alertVolume = 0.8f;
+        [Tooltip("Громкость звука атаки")]
+        [SerializeField][Range(0f, 2f)] private float attackVolume = 1f;
 
         [Header("Память цели")]
         [Tooltip("Сколько секунд мечник помнит игрока после потери видимости и " +
@@ -124,6 +130,15 @@ namespace CarGame.Combat
 
         private Rigidbody body;
         private string currentStateName;
+        // Факт движения робота для аниматора: Walk/Run играются ТОЛЬКО когда
+        // робот реально едет (скорость выше порога), Idle — только когда стоит.
+        private const float MovingSpeedThreshold = 0.2f;
+        // Небольшая гистерезис-задержка (секунды): робот «едет» для анимации,
+        // только если скорость держится выше порога дольше этого времени.
+        // Гасит дёрганье Walk↔Idle на коротких провалах скорости и не даёт
+        // показать Walk в момент фактической остановки.
+        private float movingSinceTime = -1f;
+        private bool animMovingState;
         // Таймер пост-ударной стойки (Idle). Ставится в момент удара равным
         // attackStopDuration; пока > 0 — робот НЕ двигается и НЕ замахивается.
         private float strikeHoldTimer;
@@ -322,11 +337,38 @@ namespace CarGame.Combat
                     currentStateName = null;
                 }
 
+                // ЖЁСТКАЯ СВЯЗЬ АНИМАЦИИ С ДВИЖЕНИЕМ (устраняет баги «стоит на
+                // месте в анимации Walk» и «идёт в анимации Idle»):
+                // состояние выбирается по ФАКТИЧЕСКОЙ горизонтальной скорости
+                // робота, а не по таймеру патруля.
+                //   • робот едет  (скорость > порога) → Walk (патруль) / Run (цель);
+                //   • робот стоит (скорость ~ 0)      → Idle всегда.
+                // Таймер patrolWaitUntil больше НЕ участвует в выборе анимации:
+                // раньше он мог показать Idle, когда робот ещё тормозил после
+                // точки маршрута (ехал в Idle), или наоборот держать Walk, когда
+                // движение затормозилось препятствием (стоял в Walk).
+                Vector3 actualVelocity = body != null
+                    ? Vector3.ProjectOnPlane(body.linearVelocity, Vector3.up)
+                    : Vector3.zero;
+                bool actuallyMoving = UpdateMovementHysteresis(actualVelocity.magnitude);
+
                 string desired;
-                if (holdingAfterStrike) desired = idleState;          // шаг 2 атаки: стойка Idle
-                else if (engaged) desired = runState;                  // преследование: Run
-                else if (Time.time >= patrolWaitUntil) desired = walkState; // патруль: шаг 1 — Walk
-                else desired = idleState;                              // патруль: шаг 2 — передышка Idle
+                if (!actuallyMoving)
+                {
+                    desired = idleState;                 // полный покой — только Idle
+                }
+                else if (engaged)
+                {
+                    desired = runState;                  // преследование в движении — Run
+                }
+                else
+                {
+                    desired = walkState;                 // патруль в движении — Walk
+                    // Робот реально идёт, а плановая передышка патруля ещё не
+                    // истекла — сбрасиваем её, чтобы логика движения и анимации
+                    // не расходились (иначе сразу после Walk прыгнул бы Idle).
+                    if (Time.time < patrolWaitUntil) pauseUntil = Time.time;
+                }
                 ApplyState(desired);
             }
 
@@ -403,6 +445,32 @@ namespace CarGame.Combat
             return best;
         }
 
+        /// <summary>
+        /// Ужестённая проверка «едет ли робот» для выбора анимации: состояние
+        /// «движение» включается только когда горизонтальная скорость держится
+        /// выше MovingSpeedThreshold дольше короткого порога, и выключается
+        /// СРАЗУ при падении скорости ниже порога. Так Walk/Run никогда не
+        /// остаются на остановившемся роботе, а Idle не показывается во время
+        /// честной езды (короткие провалы скорости внутри цикла шагов не
+        /// вызывают дёрганья Walk↔Idle).
+        /// </summary>
+        private bool UpdateMovementHysteresis(float horizontalSpeed)
+        {
+            if (horizontalSpeed > MovingSpeedThreshold)
+            {
+                if (movingSinceTime < 0f) movingSinceTime = Time.time;
+                if (!animMovingState && Time.time - movingSinceTime >= 0.12f)
+                    animMovingState = true;
+            }
+            else
+            {
+                movingSinceTime = -1f;
+                animMovingState = false; // стоп мгновенно → Idle
+            }
+
+            return animMovingState;
+        }
+
         private float AttackStateLength()
         {
             AnimationClip[] clips = animator != null && animator.runtimeAnimatorController != null
@@ -424,6 +492,8 @@ namespace CarGame.Combat
 
         private void PlayAttack()
         {
+            PlayAttackSound();
+
             if (!animateStrike || animator == null || string.IsNullOrEmpty(attackState)) return;
 
             // SwordBot.controller переключает атаку триггером "Attack":
@@ -432,6 +502,18 @@ namespace CarGame.Combat
             attackPlaying = true;
             attackPlayUntil = Time.time + AttackStateLength() + 0.25f;
             ApplyState(attackState);
+        }
+
+        /// <summary>
+        /// Звук замаха: ОДИН РАЗ в момент начала атаки (вызывается из PlayAttack,
+        /// то есть ровно на каждый удар). Если в инспекторе назначен attackSound —
+        /// играется он; иначе — процедурный свист удара. Громкость — attackVolume.
+        /// </summary>
+        private void PlayAttackSound()
+        {
+            AudioClip clip = attackSound != null ? attackSound : CarGame.Audio.ProceduralAudio.Whiff();
+            if (clip == null) return;
+            AudioSource.PlayClipAtPoint(clip, transform.position, attackVolume);
         }
 
         /// <summary>
