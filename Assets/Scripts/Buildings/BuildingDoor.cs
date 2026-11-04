@@ -106,11 +106,24 @@ namespace CarGame.Buildings
                  "в сторону от таранящего его моба. За это время оно успевает\n" +
                  "отойти на четверть оборота и дальше движется по инерции.")]
         [SerializeField] private float kickSwingDuration = 0.35f;
+        [Tooltip("Импульс (Н*с), с которым выломанное полотно отлетает от атакующего")]
+        [SerializeField] private float kickImpulseStrength = 14f;
+        [Tooltip("Крутящий импульс выламывания, Н*м*с")]
+        [SerializeField] private float kickSpinStrength = 4f;
         // Момент, до которого скрипт активно закручивает полотно вокруг петель
         // (удар/выламывание). После — дверь полностью свободна: физика сама
         // решает, куда ей падать и крутиться.
         private float kickUntil;
         private float kickAngularVelocity;
+        // Таран из режима продавливания коллайдеров (EnemyBase.ShouldIgnoreBlockers):
+        // закрытая дверь при таком контакте выламывается, а не просто открывается.
+        private bool forcefulRam;
+        /// <summary>Внешний переключатель режима тарана на время удара (KickFrom).</summary>
+        public bool RamEnabled
+        {
+            get { return forcefulRam; }
+            set { forcefulRam = value; }
+        }
         // Полотно выломано: скрипт больше НЕ управляет дверью вообще.
         public bool IsBroken { get; private set; }
 
@@ -217,6 +230,17 @@ namespace CarGame.Buildings
             if (amount <= 0.0001f) return;
 
             float normalized = Mathf.Clamp01(amount / Mathf.Max(0.01f, damageForFullOpen));
+
+            // Взрывы и тяжёлые попадания выламывают закрытую дверь:
+            // полотно уходит в свободную физику от точки удара.
+            if (IsClosed() && breakDamage > 0f && amount >= breakDamage)
+            {
+                Vector3 breakPoint = info.point != Vector3.zero
+                    ? info.point
+                    : transform.position;
+                BreakOpen(breakPoint);
+                return;
+            }
 
             float sign;
             if (!IsClosed())
@@ -454,9 +478,104 @@ namespace CarGame.Buildings
             return reference.TransformDirection(localAxis).normalized;
         }
 
+        /// <summary>
+        /// Удар моба/взрыв: полотно откидывается ОТ ТОЧКИ КОНТАКТА.
+        /// Если дверь закрыта и удар достаточно сильный (breakDamage или
+        /// таран из режима продавливания) — дверь выламывается: скрипт
+        /// отпускает её, полотно становится полностью свободным физическим
+        /// телом, ручка перестаёт реагировать на взаимодействие.
+        /// </summary>
+        public void KickFrom(Vector3 contactPoint)
+        {
+            KickFrom(contactPoint, 0f);
+        }
+
+        public void KickFrom(Vector3 contactPoint, float damage)
+        {
+            if (body == null || IsBroken) return;
+
+            Vector3 radial = Vector3.ProjectOnPlane(contactPoint - hingePosition, worldAxis);
+            if (radial.sqrMagnitude < 0.000001f)
+                radial = Vector3.ProjectOnPlane(transform.position - hingePosition, worldAxis);
+            if (radial.sqrMagnitude < 0.000001f) return;
+            radial.Normalize();
+
+            // Направление удара относительно петель: наружу от контактирующей стороны.
+            Vector3 pushDir = Vector3.ProjectOnPlane(contactPoint - transform.position, worldAxis);
+            if (pushDir.sqrMagnitude < 0.000001f)
+                pushDir = Vector3.ProjectOnPlane(contactPoint - hingePosition, worldAxis);
+            if (pushDir.sqrMagnitude < 0.000001f) return;
+            pushDir.Normalize();
+
+            Vector3 tangent = Vector3.Cross(worldAxis, radial).normalized;
+            float dot = Vector3.Dot(tangent, pushDir);
+            float sign = Mathf.Abs(dot) < 0.0001f ? -openSign : (dot > 0f ? 1f : -1f);
+
+            bool strong = breakDamage > 0f && damage >= breakDamage;
+            if (IsClosed() && (strong || forcefulRam))
+            {
+                BreakOpen(contactPoint);
+                return;
+            }
+
+            // Замах: активно закручиваем полотно в сторону от атакующего.
+            openSign = sign;
+            minAngle = Mathf.Min(0f, openAngle * sign);
+            maxAngle = Mathf.Max(0f, openAngle * sign);
+            currentAngle = Mathf.Clamp(currentAngle, minAngle, maxAngle);
+            targetAngle = sign * openAngle;
+            moveSpeed = kickSpeed;
+            locked = false;
+            wasOpen = true;
+            settleTimer = 0f;
+            kickUntil = Time.time + Mathf.Max(0.05f, kickSwingDuration);
+            PlaySound(openSound, ProceduralAudio.DoorOpen());
+        }
+
+        /// <summary>
+        /// Выламывание: дверь отпускается в свободную физику навсегда.
+        /// </summary>
+        public void BreakOpen(Vector3 contactPoint)
+        {
+            if (body == null || IsBroken) return;
+
+            IsBroken = true;
+
+            // Полотно больше не слушает скрипт: kinematic снимаем,
+            // ограничения вращения сбрасываем — дверь падает и крутится сама.
+            body.isKinematic = false;
+            body.constraints = baseConstraints;
+            body.collisionDetectionMode = CollisionDetectionMode.Continuous;
+            body.interpolation = RigidbodyInterpolation.Interpolate;
+
+            Vector3 radial = Vector3.ProjectOnPlane(contactPoint - hingePosition, worldAxis);
+            if (radial.sqrMagnitude < 0.000001f)
+                radial = Vector3.ProjectOnPlane(transform.position - hingePosition, worldAxis);
+
+            Vector3 impulseDir = radial.sqrMagnitude > 0.000001f
+                ? Vector3.ProjectOnPlane(contactPoint - hingePosition, worldAxis).normalized
+                : -transform.forward;
+            if (impulseDir.sqrMagnitude < 0.000001f) impulseDir = -transform.forward;
+
+            body.AddForceAtPosition(impulseDir * kickImpulseStrength, contactPoint, ForceMode.Impulse);
+            body.AddTorque(worldAxis * (UnityEngine.Random.Range(0f, 1f) < 0.5f ? -1f : 1f) * kickSpinStrength, ForceMode.Impulse);
+
+            PlaySound(openSound, ProceduralAudio.DoorOpen());
+        }
+
         private void FixedUpdate()
         {
-            if (body == null || locked) return;
+            if (body == null || locked || IsBroken) return;
+
+            // Пока идёт активный замах удара — цель держится, дверь не «запирается».
+            if (kickUntil > 0f)
+            {
+                if (Time.time >= kickUntil)
+                {
+                    kickUntil = 0f;
+                    forcefulRam = false;
+                }
+            }
 
             float remaining = targetAngle - currentAngle;
             if (Mathf.Abs(remaining) > 0.001f)

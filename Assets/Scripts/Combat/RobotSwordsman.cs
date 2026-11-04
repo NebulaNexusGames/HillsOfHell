@@ -524,6 +524,25 @@ namespace CarGame.Combat
         /// </summary>
         private void UpdatePatrolTurnStop(ref Vector3 direction)
         {
+            // Дверной проём впереди — НЕ повод вставать на поворотную стоянку:
+            // курс через дверь всегда «свободный» (по ТЗ мечник направляется в
+            // проём, а не отходит). Цель — точка входа в проём.
+            DoorwayVolume doorway = DoorwayToEnter;
+            if (doorway != null)
+            {
+                if (patrolTurning)
+                {
+                    patrolTurning = false;
+                    gizmoLineActive = false;
+                    rayFrozen = false;
+                }
+                stuckWhileWalking = 0f;
+                Vector3 toDoor = FlatTowards(doorway.Center - transform.position);
+                patrolTurnTo = toDoor;
+                direction = toDoor;
+                return;
+            }
+
             if (patrolTurning)
             {
                 UpdateDirectionScanner();

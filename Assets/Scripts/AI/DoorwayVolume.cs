@@ -343,26 +343,50 @@ namespace CarGame.AI
         /// Попытка открыть дверь проёма ради моба. Вызывается из EnemyBase при
         /// таргете проёма. Условие: полотно есть, закрыто, никто из игроков не
         /// рядом (приоритет взаимодействия с дверью у игрока).
+        /// contact — точка касания тела моба с полотном (для выламывания);
+        /// ram — моб в режиме продавливания коллайдеров (упорный таран).
         /// </summary>
         public void TryOpenForEnemy(Vector3 robotPosition)
         {
+            TryOpenForEnemy(robotPosition, Vector3.zero, false);
+        }
+
+        public void TryOpenForEnemy(Vector3 robotPosition, Vector3 contact, bool ram)
+        {
             if (!openForEnemies || door == null) return;
+            if (door.IsBroken) return; // выломанная дверь больше не управляется
             if ((Center - robotPosition).sqrMagnitude > triggerRange * triggerRange) return;
-            if (!door.IsClosed()) return;
+            if (!door.IsClosed())
+            {
+                blockedAttempts = 0;
+                return;
+            }
 
             // Не выдёргивать дверь из-под игрока: проверка раз в 0.5 с, не каждый кадр.
             if (Time.time < nextDoorCheckTime) return;
             nextDoorCheckTime = Time.time + 0.5f;
 
+            bool hasContact = contact.sqrMagnitude > 0.0001f;
+
             // Игрок рядом — штатное открытие откладывается: приоритет у
             // взаимодействия игрока. Но если моб уже упёрся в полотно телом
-            // (contact), дверь ВЫЛОМЫВАЕТСЯ в любую сторону от него — иначе
+            // (contact/ram), дверь ОТКИДЫВАЕТСЯ в сторону от него — иначе
             // запертая изнутри дверь делала убежище недосягаемым.
             bool playerNear = IsAnyPlayerNearby();
-            if (!playerNear || contact)
+            if (!playerNear || hasContact || ram)
             {
-                door.Open();
-                if (contact) door.KickFrom(contact);
+                if (hasContact || ram)
+                {
+                    Vector3 kickPoint = hasContact ? contact : robotPosition;
+                    // Таран из режима продавливания: закрытая дверь выламывается.
+                    door.RamEnabled = ram;
+                    door.KickFrom(kickPoint);
+                    door.RamEnabled = false;
+                }
+                else
+                {
+                    door.Open();
+                }
             }
 
             // Дверь упорно не открывается (locked-запрет, заклин): после
@@ -371,9 +395,9 @@ namespace CarGame.AI
             if (door.IsClosed())
             {
                 blockedAttempts++;
-                if (blockedAttempts >= BreakAfterFailedOpens && contact)
+                if (blockedAttempts >= BreakAfterFailedOpens && (hasContact || ram))
                 {
-                    door.BreakOpen(contact);
+                    door.BreakOpen(hasContact ? contact : robotPosition);
                     blockedAttempts = 0;
                 }
             }
