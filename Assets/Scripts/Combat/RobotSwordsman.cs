@@ -531,7 +531,7 @@ namespace CarGame.Combat
             for (int attempt = 0; attempt < 8; attempt++)
             {
                 Vector2 offset = Random.insideUnitCircle * PatrolRadius;
-                Vector3 candidate = SpawnPoint + new Vector3(offset.x, 0f, offset.z);
+                Vector3 candidate = SpawnPoint + new Vector3(offset.x, 0f, offset.y);
                 Vector3 flat = FlatTowards(candidate - transform.position);
                 if (flat.sqrMagnitude < 0.0001f) continue;
                 // Не разворачиваемся туда, куда уже шли (иначе поворот = 0°).
