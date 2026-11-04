@@ -900,8 +900,9 @@ namespace CarGame.Combat
                 // Режим точек маршрута: тоже ведём робота по лучу — иначе
                 // PickNextPatrolPoint возьмёт ближайшую точку в другом
                 // направлении и выбор сканера будет проигнорирован.
-                WanderDestination = rayBase + dir * distance;
-                WanderDestination.y = transform.position.y;
+                Vector3 routeDestination = rayBase + dir * distance;
+                routeDestination.y = transform.position.y;
+                WanderDestination = routeDestination;
             }
         }
 
