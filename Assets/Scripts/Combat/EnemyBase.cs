@@ -121,6 +121,17 @@ namespace CarGame.Combat
         private DoorwayVolume blockedDoorway;
         // Кадр, в котором последний свип зацепил что-то чужое (для «продавливания»).
         private int lastBlockerFrame = -100;
+        // Предыдущий кадр контакта с препятствием: «упёрся» держится ещё кадр
+        // после того, как свип перестал цеплять блокер (робот скользнул вдоль).
+        private int previousBlockerFrame = -100;
+        // Момент последнего включения аварийного «продавливания». Пока он свеж
+        // (окно ignoreBlockersHoldTime), режим не срывается в кадрах, когда
+        // свип из-за скольжения вдоль стены ничего не зацепил.
+        private float blockersIgnoreUntil = -100f;
+        // Продавливание активна в текущем кадре (кэш ShouldIgnoreBlockers()).
+        private bool ignoreBlockersNow;
+        // Сколько секунд после контакта считать моба «упершимся» в дверь.
+        private const float IgnoreBlockersHoldTime = 0.6f;
 
         protected Health health;
         protected PlayerController player;
@@ -386,6 +397,25 @@ namespace CarGame.Combat
         /// читает его, чтобы рассчитать снижение под свод проёма).</summary>
         protected DoorwayVolume ActiveDoorway => activeDoorway;
 
+        /// <summary>Ближайший «непроходимый по габаритам» проём впереди — тот,
+        /// ради которого моб готов игнорировать коллайдеры (аварийное
+        /// «продавливание»). Для наследников (RobotSwordsman: сканер
+        /// направления на патруле обязан видеть дверь как свободный курс).</summary>
+        protected DoorwayVolume BlockedDoorway => blockedDoorway;
+
+        /// <summary>Есть ли рядом проём, в который моб смотрит и через который
+        /// он пытается пройти (проходимый или аварийно-блокированный). Истинно
+        /// и когда включено продавливание: у такой двери запрещены плановые
+        /// стоянки патруля и развороты.</summary>
+        protected bool HasDoorwayToEnter =>
+            (activeDoorway != null && !activeDoorway.Equals(null))
+            || (blockedDoorway != null && !blockedDoorway.Equals(null)
+                && IsDoorwayAhead(blockedDoorway, -0.2f));
+
+        /// <summary>Последняя точка маршрута блуждания базового класса
+        /// (wanderTarget) для дочерних классов (режим сканера мечника).</summary>
+        protected Vector3 PatrolWanderTarget => wanderTarget;
+
         /// <summary>Летающий ли этот моб (флаг инспектора «Flying Robot»).</summary>
         protected bool IsFlyingRobot => flyingRobot;
 
@@ -408,6 +438,16 @@ namespace CarGame.Combat
         /// </summary>
         private void UpdateActiveDoorway()
         {
+            // Контакт «был в предыдущем кадре»: держим окно продавливания даже
+            // тогда, когда свип в текущем кадре ничего не зацепил (моб
+            // чуть скользнул вдоль стены). Сдвигаем только если кадр контакта
+            // реально новый — иначе затрём свежий lastBlockerFrame.
+            if (previousBlockerFrame != lastBlockerFrame
+                && Time.frameCount - lastBlockerFrame > 1)
+            {
+                previousBlockerFrame = lastBlockerFrame;
+            }
+
             if (Time.time < doorwayRefreshTime) return;
             doorwayRefreshTime = Time.time + 0.25f;
 
@@ -419,6 +459,13 @@ namespace CarGame.Combat
             // «продавливания» препятствий — см. ShouldIgnoreBlockers().
             DoorwayVolume nearestBlocked = null;
             float nearestBlockedDistance = float.MaxValue;
+
+            // Проём, через который лежит прямой путь к ЦЕЛИ (или к последней
+            // виденной точке): приоритет при выборе активного — иначе моб
+            // таргетил бы ближайшую дверь не с той стороны здания и «прятался»
+            // от игрока за стеной вместо прохода сквозь дыру.
+            DoorwayVolume targetDoorway = null;
+            float targetDoorwayDistance = float.MaxValue;
 
             IReadOnlyList<DoorwayVolume> all = DoorwayVolume.All;
             for (int i = 0; i < all.Count; i++)
@@ -456,9 +503,28 @@ namespace CarGame.Combat
                 if (distance >= bestDistance) continue;
                 best = doorway;
                 bestDistance = distance;
+
+                // Этот же проём на линии «робот → цель»? Запоминаем лучшего
+                // из «целевых» (самый близкий из них).
+                Vector3 interestPoint = InterestPoint();
+                if (interestPoint.sqrMagnitude > 0.01f
+                    && SideOfWall(doorway, transform.position)
+                        * SideOfWall(doorway, interestPoint) < 0f
+                    && distance < targetDoorwayDistance)
+                {
+                    targetDoorway = doorway;
+                    targetDoorwayDistance = distance;
+                }
             }
 
             blockedDoorway = nearestBlocked;
+
+            // Приоритет двери, ведущей к цели: если такая есть и она отличается
+            // от ближайшей — идём к ней, а не метаемся между дверями.
+            if (targetDoorway != null && targetDoorway != best)
+            {
+                best = targetDoorway;
+            }
 
             if (best == null)
             {
@@ -491,6 +557,26 @@ namespace CarGame.Combat
         }
 
         /// <summary>
+        /// Точка интереса преследования: позиция текущей цели, иначе — последняя
+        /// виденная позиция (память цели). Vector3.zero, если цели нет вообще.
+        /// </summary>
+        private Vector3 InterestPoint()
+        {
+            if (HasTarget && Target != null && !Target.Equals(null))
+                return Target.transform.position;
+            if (hasLastKnownTargetPosition)
+                return lastKnownTargetPosition;
+            return Vector3.zero;
+        }
+
+        /// <summary>Знак стороны стены проёма, на которой лежит точка
+        /// (проекция «центр двери → точка» на ось прохода).</summary>
+        private static float SideOfWall(DoorwayVolume doorway, Vector3 point)
+        {
+            return Vector3.Dot(point - doorway.Center, doorway.PassDirection);
+        }
+
+        /// <summary>
         /// Находится ли проём «впереди» робота: горизонтальное направление на
         /// его центр не расходится с носом сильнее порога (dot > minDot).
         /// distance <= 1.5 м считается «и так рядом» — вызывающий метод сам
@@ -510,16 +596,30 @@ namespace CarGame.Combat
 
         /// <summary>
         /// Аварийный режим «продавливания»: моб реально упёрся в препятствие
-        /// (последний свип зацепил чужой коллайдер в этом же кадре), рядом
-        /// стоит дверной проём, в который моб по габаритам НЕ проходит
+        /// (свип зацепил чужой коллайдер в этом, прошлом или секунду назад
+        /// кадре — при скольжении вдоль стены контакт пропадает на кадр-два),
+        /// рядом стоит дверной проём, в который моб по габаритам НЕ проходит
         /// (зона не выставлена / узкая арка), и моб смотрит примерно в него.
         /// В этом случае препятствия перестают быть препятствиями для выбора
         /// направления: мечник/камикадзе идут прямо в дверь телом, дрон —
-        /// корпусом, вместо вечного скольжения вдоль косяка. Требование
-        /// «был контакт в этом кадре» важно: без него робот игнорировал бы
-        /// стены, просто проходя мимо любой двери вплотную к зданию.
+        /// корпусом, вместо вечного скольжения вдоль косяка. Окно удержания
+        /// (IgnoreBlockersHoldTime) нужно, чтобы режим не мигал каждый кадр:
+        /// как только моб дошёл до двери и прошёл её, контакт гаснет, окно
+        /// истекает — и обычная логика объезда стен возвращается сама.
         /// </summary>
         private bool ShouldIgnoreBlockers()
+        {
+            ignoreBlockersNow = EvaluateIgnoreBlockers();
+            if (ignoreBlockersNow) blockersIgnoreUntil = Time.time;
+            return ignoreBlockersNow;
+        }
+
+        /// <summary>Кэш результата ShouldIgnoreBlockers() для текущего кадра
+        /// (используется в IsBlocked, чтобы не пересчитывать условие со
+        /// «свежестью контакта», которое само же этот кэш и обновляет).</summary>
+        private bool IgnoreBlockersCached => ignoreBlockersNow;
+
+        private bool EvaluateIgnoreBlockers()
         {
             if (!ignoreBlockersWhenDoorwayBlocked) return false;
             if (blockedDoorway == null || blockedDoorway.Equals(null)) return false;
@@ -530,8 +630,15 @@ namespace CarGame.Combat
                 && !activeDoorway.IsOpenOrAbsent
                 && activeDoorway.IsEffectivelyBlockedForGround;
 
-            if (!doorwayRefusesToOpen && Time.frameCount != lastBlockerFrame) return false;
-            return IsDoorwayAhead(blockedDoorway, 0.2f);
+            // Моб «упёрся», если контакт с препятствием был в этом кадре,
+            // в предыдущем, или продавливание включалось меньше окна удержания
+            // назад (режим не срывается на кадрах, когда свип скользнул мимо).
+            bool recentContact = Time.frameCount - lastBlockerFrame <= 1
+                || Time.frameCount - previousBlockerFrame <= 2
+                || Time.time - blockersIgnoreUntil < IgnoreBlockersHoldTime;
+
+            if (!doorwayRefusesToOpen && !recentContact) return false;
+            return IsDoorwayAhead(blockedDoorway, -0.2f);
         }
 
         /// <summary>
