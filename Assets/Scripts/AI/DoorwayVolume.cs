@@ -122,17 +122,35 @@ namespace CarGame.AI
         /// <summary>Центр проёма — точка, в которую мобы целятся при обходе стены.</summary>
         public Vector3 Center => zone != null ? zone.bounds.center : transform.position;
 
-        /// <summary>Горизонтальная ширина прохода, м (сумма двух горизонтальных полуосей кроме оси прохода).</summary>
-        public float PassageWidth
+        /// <summary>Горизонтальная полуось зоны, перпендикулярная оси прохода
+        /// (это и есть половина ширины самого проёма). Третья горизонтальная
+        /// полуось — «толщина» коробки вдоль стены.</summary>
+        private float HorizontalPerpHalf
         {
             get
             {
-                if (zone == null) return 0f;
-                float a = axisIndex == 0 ? localHalf.y : localHalf.x;
-                float b = axisIndex == 2 ? localHalf.y : localHalf.z;
-                return (a + b) * 2f;
+                // Ось Y всегда вертикальна и не участвует. Из X/Z выбираем ту,
+                // которая НЕ является осью прохода.
+                if (axisIndex == 0) return localHalf.z;
+                if (axisIndex == 2) return localHalf.x;
+                return Mathf.Max(localHalf.x, localHalf.z);
             }
         }
+
+        /// <summary>Горизонтальная полуось зоны ВДОЛЬ стены (толщина коробки
+        /// прохода с запасом по обе стороны от стены).</summary>
+        private float HorizontalAlongWallHalf
+        {
+            get
+            {
+                if (axisIndex == 0) return localHalf.x;
+                if (axisIndex == 2) return localHalf.z;
+                return Mathf.Min(localHalf.x, localHalf.z);
+            }
+        }
+
+        /// <summary>Ширина прохода, м (удвоенная полуось, перпендикулярная стене).</summary>
+        public float PassageWidth => HorizontalPerpHalf * 2f;
 
         /// <summary>Высота свода проёма над полом зоны, м.</summary>
         public float CeilingHeight
@@ -146,6 +164,28 @@ namespace CarGame.AI
         }
 
         public float FloorY => zone != null ? zone.bounds.min.y : transform.position.y;
+
+        /// <summary>Мировое направление оси прохода (нормаль стены в проёме).</summary>
+        public Vector3 PassDirection
+        {
+            get
+            {
+                Vector3 local = axisIndex switch
+                {
+                    0 => Vector3.right,
+                    1 => Vector3.up,
+                    _ => Vector3.forward
+                };
+                return transform.TransformDirection(local).normalized;
+            }
+        }
+
+        /// <summary>Полуширина проёма вдоль стены (для проверки «цель внутри
+        /// створа проёма», а не сбоку за косяком).</summary>
+        public float HalfWidthAlongWall => HorizontalPerpHalf;
+
+        /// <summary>Центр проёма на уровне пола (порог/точка входа наземных мобов).</summary>
+        public Vector3 GroundCenter => new Vector3(Center.x, FloorY, Center.z);
 
         /// <summary>Минимальная высота свода, проходимая дроном, м.</summary>
         public float DroneMinCeiling => droneMinCeiling;

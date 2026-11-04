@@ -359,6 +359,204 @@ namespace CarGame.Combat
             StartDetour();
         }
 
+        // ================= ДВЕРНЫЕ ПРОЁМЫ =====================================
+        // Логика прохода мобов через дверные проёмы (см. CarGame.AI.DoorwayVolume).
+        // Три вещи происходят каждый кадр (с троттлингом 0.25 с):
+        // 1. Обновляется activeDoorway — ближайший проходимый проём, к которому
+        //    моб «привязан». Стена этого проёма перестаёт быть препятствием,
+        //    пока моб смотрит в створ двери.
+        // 2. Дверь проёма автоматически открывается при приближении моба
+        //    (если рядом нет игрока — приоритет взаимодействия у игрока).
+        // 3. При преследовании цели за стеной маршрут строится ЧЕРЕЗ центр
+        //    активного проёма, а не напрямую сквозь стену.
+
+        /// <summary>Активный дверной проём робота (для наследников: RobotDrone
+        /// читает его, чтобы рассчитать снижение под свод проёма).</summary>
+        protected DoorwayVolume ActiveDoorway => activeDoorway;
+
+        /// <summary>Летающий ли этот моб (флаг инспектора «Flying Robot»).</summary>
+        protected bool IsFlyingRobot => flyingRobot;
+
+        /// <summary>Полуширина корпуса робота для проверок проходимости проёма, м.</summary>
+        private float RobotDiameter => (halfExtents.x - avoidClearance) * 2f;
+
+        /// <summary>Высота корпуса робота для проверок свода проёма, м.</summary>
+        private float RobotHeight => bodyHalfHeight * 2f;
+
+        /// <summary>
+        /// Раз в 0.25 с выбирает ближайший проходимоый проём и просит его дверь
+        /// открыться. Анти-дрожание: переключение на новый проём происходит
+        /// только если он остаётся ближайшим дольше doorwaySwitchDelay.
+        /// </summary>
+        private void UpdateActiveDoorway()
+        {
+            if (Time.time < doorwayRefreshTime) return;
+            doorwayRefreshTime = Time.time + 0.25f;
+
+            DoorwayVolume best = null;
+            float bestDistance = float.MaxValue;
+
+            IReadOnlyList<DoorwayVolume> all = DoorwayVolume.All;
+            for (int i = 0; i < all.Count; i++)
+            {
+                DoorwayVolume doorway = all[i];
+                if (doorway == null || doorway.Equals(null)) continue;
+
+                Vector3 toDoor = doorway.Center - transform.position;
+                float distance = toDoor.magnitude;
+
+                // Дальность привязки: проём интересен, только если он где-то
+                // рядом или между роботом и целью. Дальше DetectRange — мимо.
+                if (distance > DetectRange + 4f) continue;
+
+                if (!doorway.FitsRobot(RobotDiameter, RobotHeight, stepUpHeight, flyingRobot)) continue;
+
+                // Проём «впереди» робота либо он уже почти внутри него. Иначе
+                // робот таргетил бы двери за спиной и разворачивался к ним.
+                if (distance > 1.5f)
+                {
+                    Vector3 flat = Vector3.ProjectOnPlane(toDoor, Vector3.up);
+                    if (flat.sqrMagnitude > 0.01f)
+                    {
+                        Vector3 forward = Vector3.ProjectOnPlane(transform.forward, Vector3.up);
+                        if (forward.sqrMagnitude > 0.01f
+                            && Vector3.Dot(forward.normalized, flat.normalized) < -0.35f) continue;
+                    }
+                }
+
+                if (distance >= bestDistance) continue;
+                best = doorway;
+                bestDistance = distance;
+            }
+
+            if (best == null)
+            {
+                activeDoorway = null;
+                pendingDoorway = null;
+                return;
+            }
+
+            if (best == activeDoorway)
+            {
+                pendingDoorway = null;
+                best.TryOpenForEnemy(transform.position);
+                return;
+            }
+
+            // Смена проёма — с задержкой, чтобы робот не метался между двумя
+            // соседними дверями на границе зон таргетинга.
+            if (pendingDoorway != best)
+            {
+                pendingDoorway = best;
+                pendingDoorwaySince = Time.time;
+                return;
+            }
+
+            if (Time.time - pendingDoorwaySince < Mathf.Max(0f, doorwaySwitchDelay)) return;
+
+            activeDoorway = best;
+            pendingDoorway = null;
+            best.TryOpenForEnemy(transform.position);
+        }
+
+        /// <summary>
+        /// Смотрит ли робот «в створ» указанного проёма: горизонтальное
+        /// направление на центр двери совпадает с осью прохода (моб находится
+        /// на линии прохода по одну сторону стены) ИЛИ мобиль уже внутри зоны.
+        /// Именно в этом случае стена проёма перестаёт быть препятствием.
+        /// </summary>
+        private bool LooksThroughDoorway(DoorwayVolume doorway)
+        {
+            if (doorway == null) return false;
+
+            Vector3 center = doorway.Center;
+            Vector3 toCenter = center - FrontPosition;
+
+            // Уже внутри коробки проёма (по горизонтали) — идём прямо.
+            Vector3 passDir = doorway.PassDirection;
+            Vector3 alongWall = Vector3.Cross(Vector3.up, passDir);
+            if (alongWall.sqrMagnitude < 0.0001f) alongWall = transform.right;
+            alongWall.Normalize();
+
+            float lateral = Vector3.Dot(toCenter, alongWall);
+            if (Mathf.Abs(lateral) <= doorway.HalfWidthAlongWall + 0.3f)
+            {
+                float longitudinal = Vector3.Dot(toCenter, passDir);
+                // Толщина зоны: если |longitudinal| мал — мы в зоне двери.
+                if (Mathf.Abs(longitudinal) <= 3.5f) return true;
+            }
+
+            // Робот на створе двери, но ещё снаружи: направление на центр
+            // проёма параллельно оси прохода (±~26°). Тогда цель «видна через
+            // дверь» и стена вокруг неё не мешает.
+            Vector3 flatToDoor = Vector3.ProjectOnPlane(toCenter, Vector3.up);
+            if (flatToDoor.sqrMagnitude < 0.01f) return true;
+            flatToDoor.Normalize();
+
+            Vector3 axisFlat = Vector3.ProjectOnPlane(passDir, Vector3.up);
+            if (axisFlat.sqrMagnitude < 0.01f) return false;
+            axisFlat.Normalize();
+
+            float alignment = Mathf.Abs(Vector3.Dot(flatToDoor, axisFlat));
+            if (alignment < 0.9f) return false;
+
+            // Плюс робот должен смотреть примерно на дверь (иначе это «дверь
+            // сбоку», в которую моб не идёт).
+            Vector3 forward = Vector3.ProjectOnPlane(transform.forward, Vector3.up);
+            if (forward.sqrMagnitude > 0.01f
+                && Vector3.Dot(forward.normalized, flatToDoor) < 0.45f) return false;
+
+            return true;
+        }
+
+        /// <summary>
+        /// Лежит ли точка за створом активного проёма (цель по другую сторону
+        /// стены): проекция вектора «робот → точка» на ось прохода меняет знак
+        /// относительно проекции центра двери, и боковое смещение точки не
+        /// вылезает за полуширину проёма. Используется для LineOfSight и
+        /// целеуказания: сквозь открытую дверь «видно» и «можно идти».
+        /// </summary>
+        private bool PointBeyondActiveDoorway(Vector3 point)
+        {
+            DoorwayVolume doorway = activeDoorway;
+            if (doorway == null || !doorway.IsOpenOrAbsent) return false;
+
+            Vector3 passDir = doorway.PassDirection;
+            Vector3 alongWall = Vector3.Cross(Vector3.up, passDir);
+            if (alongWall.sqrMagnitude < 0.0001f) return false;
+            alongWall.Normalize();
+
+            Vector3 selfToDoor = doorway.Center - FrontPosition;
+            Vector3 selfToPoint = point - FrontPosition;
+
+            float doorSide = Vector3.Dot(selfToDoor, passDir);
+            float pointSide = Vector3.Dot(selfToPoint, passDir);
+
+            // Цель по разные стороны стены от робота.
+            if (doorSide * pointSide <= 0f) return false;
+            // Робот обязан смотреть в створ двери.
+            if (!LooksThroughDoorway(doorway)) return false;
+
+            // Боковое смещение цели не больше ширины проёма (+запас на корпус).
+            float doorLateral = Vector3.Dot(selfToDoor, alongWall);
+            float pointLateral = Vector3.Dot(selfToPoint, alongWall);
+            float allowed = doorway.HalfWidthAlongWall + halfExtents.x + 0.2f;
+
+            return Mathf.Abs(pointLateral - doorLateral) <= allowed;
+        }
+
+        /// <summary>
+        /// Перестаёт ли активный проём считать данный коллайдер препятствием?
+        /// True — если коллайдер принадлежит стене/полотну проёма, в который
+        /// робот сейчас смотрит. Вызывается из IsBlocked/Sweep-фильтров.
+        /// </summary>
+        private bool BlocksByActiveDoorway(Collider candidate)
+        {
+            if (candidate == null || activeDoorway == null) return false;
+            if (!activeDoorway.BelongsToStructure(candidate)) return false;
+            return LooksThroughDoorway(activeDoorway);
+        }
+
         protected virtual void BaseAwake()
         {
             spawnPoint = transform.position;
@@ -447,6 +645,7 @@ namespace CarGame.Combat
         protected virtual void BaseUpdate()
         {
             climbing = false;
+            UpdateActiveDoorway();
             UpdateTarget();
 
             // Преследование «по памяти»: цель ещё активна (loseTargetMemory не
@@ -769,6 +968,12 @@ namespace CarGame.Combat
             {
                 Collider candidate = sightBuffer[i].collider;
                 if (candidate == null || IsSelf(candidate)) continue;
+
+                // Сквозь ОТКРЫТЫЙ проём, в который робот сейчас смотрит, его же
+                // стена/полотно зрение не заслоняют. Иначе моб «терял» игрока в
+                // момент входа в дверь и останавливался посреди проёма.
+                if (BlocksByActiveDoorway(candidate) && activeDoorway.IsOpenOrAbsent) continue;
+
                 if (sightBuffer[i].distance >= nearest) continue;
 
                 nearest = sightBuffer[i].distance;
@@ -776,7 +981,14 @@ namespace CarGame.Combat
             }
 
             if (nearestCollider == null) return true;
-            return IsColliderOf(target, nearestCollider);
+            if (IsColliderOf(target, nearestCollider)) return true;
+
+            // Просмотр сквозь активный проём: цель по другую сторону стены
+            // двери и внутри створа проёма — считаем её видимой даже если луч
+            // формально задел блокер (например край стены у косяка).
+            if (PointBeyondActiveDoorway(target.transform.position)) return true;
+
+            return false;
         }
 
         private static bool IsColliderOf(Health target, Collider candidate)
@@ -790,7 +1002,35 @@ namespace CarGame.Combat
         protected Vector3 ResolveDestination()
         {
             if (HasTarget && Target != null && !Target.Equals(null))
-                return Target.transform.position;
+            {
+                Vector3 targetPosition = Target.transform.position;
+
+                // Цель за стеной активного проёма, а прямой путь к ней закрыт —
+                // идём через центр двери, а не прямым рывком в стену.
+                if (activeDoorway != null
+                    && PointBeyondActiveDoorway(targetPosition)
+                    && !IsPathClear(targetPosition - FrontPosition))
+                {
+                    return activeDoorway.Center;
+                }
+
+                return targetPosition;
+            }
+
+            if (chaseMemoryDestinationActive && hasLastKnownTargetPosition)
+            {
+                // Преследование «по памяти»: последняя виденная позиция цели.
+                // Если она за дверным проёмом — маршрут тоже через центр двери.
+                if (activeDoorway != null
+                    && PointBeyondActiveDoorway(lastKnownTargetPosition)
+                    && !IsPathClear(lastKnownTargetPosition - FrontPosition))
+                {
+                    return activeDoorway.Center;
+                }
+
+                return lastKnownTargetPosition;
+            }
+
             return ResolvePatrolDestination();
         }
 
@@ -1152,6 +1392,9 @@ namespace CarGame.Combat
                 Collider candidate = sweepBuffer[i];
                 if (IsSelf(candidate)) continue;
                 if (IsTargetCollider(candidate)) continue;
+                // Контакт со стеной собственного проёма — не «застревание»:
+                // робот входит в дверь, косяки неизбежно вплотную к корпусу.
+                if (BlocksByActiveDoorway(candidate)) continue;
                 return true;
             }
 
@@ -1195,6 +1438,11 @@ namespace CarGame.Combat
 
             if (Sweep(origin, extents, direction, obstacleProbe) && !IsSelf(BlockingCollider) && !IsTargetCollider(BlockingCollider))
             {
+                // Стена/полотно активного дверного проёма, в который робот
+                // смотрит, — НЕ препятствие: моб обязан идти прямо в дверь, а
+                // не скользить вдоль косяка и не разворачиваться от «стены».
+                if (BlocksByActiveDoorway(BlockingCollider)) return false;
+
                 if (IsGroundClimbable(direction))
                 {
                     climbing = true;
@@ -1210,7 +1458,10 @@ namespace CarGame.Combat
             Vector3 debrisOrigin = new Vector3(origin.x, GroundLevel + debrisHeight * 0.5f, origin.z);
 
             if (Sweep(debrisOrigin, debrisExtents, direction, obstacleProbe * 0.6f) && !IsSelf(BlockingCollider) && !IsTargetCollider(BlockingCollider))
+            {
+                if (BlocksByActiveDoorway(BlockingCollider)) return false;
                 return true;
+            }
 
             return false;
         }
@@ -1396,6 +1647,19 @@ namespace CarGame.Combat
         }
 
         protected bool RepathExpired => Time.time >= repathTime;
+
+        // ---- Дверные проёмы: API для дочерних классов -----------------------
+        /// <summary>Полуширина корпуса робота (без запаса обхода), м.</summary>
+        protected float RobotBodyRadius => Mathf.Max(0.05f, halfExtents.x - avoidClearance);
+
+        /// <summary>Высота корпуса робота, м.</summary>
+        protected float RobotBodyHeight => bodyHalfHeight * 2f;
+
+        /// <summary>Перепад, который робот переступает автоматически, м.</summary>
+        protected float StepUpValue => stepUpHeight;
+
+        /// <summary>Слои-препятствия для обхода (нужен дрону при зонде свода проёма).</summary>
+        protected LayerMask ObstacleLayers => obstacleMask;
 
         /// <summary>Множитель зрения от кровавой луны (1, если событие неактивно).</summary>
         protected static float BloodMoonVisionMultiplier =>
