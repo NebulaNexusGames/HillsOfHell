@@ -139,6 +139,25 @@ namespace CarGame.Combat
         // показать Walk в момент фактической остановки.
         private float movingSinceTime = -1f;
         private bool animMovingState;
+        // ===== ПАТРУЛЬ: ходим ВСЕГДА, стоим ТОЛЬКО чтобы повернуть =====
+        // Флаг «робот на плановой поворотной стоянке». Ставится в момент, когда
+        // патруль дошёл до точки маршрута (или упёрся в препятствие): робот
+        // честно встаёт в Idle и дожидается, пока поворот к новой точке будет
+        // завершён — после чего СРАЗУ идёт дальше. Никаких длинных стоянок:
+        // если по какой-то причине поворот не фиксируется, срабатывает жёсткий
+        // предохранитель patrolTurnMaxWait, и робот трогается в любом случае.
+        private bool patrolTurning;
+        // Момент, когда поворотная стоянка обязана закончиться (страховка).
+        private float patrolTurnEndsAt;
+        // Целевое направление после поворота (к новой точке маршрута).
+        private Vector3 patrolTurnTo;
+        [Tooltip("Максимальная длительность поворотной стоянки на патруле, с. " +
+                 "Жёсткий предохранитель: даже если поворот не завершился, робот " +
+                 "тронется через это время. Долгих остановок на маршруте быть не должно.")]
+        [SerializeField] private float patrolTurnMaxWait = 2f;
+        [Tooltip("Допустимая ошибка направления (косинус угла), при которой " +
+                 "поворот считается завершённым. 0.98 ≈ 11.5°.")]
+        [SerializeField] private float patrolTurnAlignDot = 0.98f;
         // Таймер пост-ударной стойки (Idle). Ставится в момент удара равным
         // attackStopDuration; пока > 0 — робот НЕ двигается и НЕ замахивается.
         private float strikeHoldTimer;
@@ -250,7 +269,15 @@ namespace CarGame.Combat
 
             if (health == null || health.IsDead) return;
 
+            // Сброс флага поворотной стоянки при смене режима: если робот
+            // стоит в Idle и ждёт завершения поворота, а цель появилась —
+            // немедленно снимаем patrolTurning, иначе движение заблокируется
+            // навсегда.
             BaseUpdate();
+            if (HasTarget && Target != null && !Target.Equals(null))
+            {
+                patrolTurning = false;
+            }
 
             // Тик пост-ударной стойки (секунды).
             if (strikeHoldTimer > 0f) strikeHoldTimer -= Time.deltaTime;
@@ -298,23 +325,36 @@ namespace CarGame.Combat
                 : ComputeAvoidance(desiredDirection);
 
             // --- Разрешение движения (ровно по ТЗ) ---
-            // Стоять можно только: в пост-ударной стойке (strikeHoldTimer),
-            // во время замаха (attackPlaying) и на плановой передышке патруля
-            // (PatrolAllowsMove). Больше нигде: преследование бессрочное,
-            // патруль ходит.
-            // ВАЖНО: CanMoveNow()/PatrolAllowsMove() НЕ используются — при
-            // включенном requireReachableTarget базовый класс ставит плановую
-            // паузу (pauseUntil) на время обхода препятствий, и робот «топтался
-            // на месте» в Idle/Walk даже когда маршрут чист. По ТЗ движение
-            // разрешено ВСЕГДА, кроме: замаха атаки и 2-секундной стойки после
-            // удара. Передышка патруля сама приводит робота к точке (destination
-            // совпадает с позицией → Move тормозит скорость до нуля), анимация
-            // при этом честно переключается Walk ↔ Idle.
+            // ДВИЖЕНИЕ РАЗРЕШЕНО ВСЕГДА, кроме трёх случаев:
+            //   • замах атаки (attackPlaying);
+            //   • пост-ударная стойка (strikeHoldTimer);
+            //   • поворотная стоянка патруля (patrolTurning) — робот встаёт,
+            //     доворачивается к новой точке маршрута и СРАЗУ идёт дальше.
+            // Старые паузы базового класса (pauseUntil/PatrolAllowsMove) в
+            // расчёт НЕ берутся: раньше именно они сажали робота в Idle
+            // посреди чистого маршрута или держали Walk на остановившемся
+            // боте. Преследование — бессрочное, без остановок; патруль —
+            // ходит всегда, стоит только чтобы повернуть.
             bool holdingAfterStrike = strikeHoldTimer > 0f;
-            bool mayMove = !holdingAfterStrike && !attackPlaying;
+
+            // Активность поворотной стоянки управляется только этим блоком.
+            if (!engaged)
+            {
+                UpdatePatrolTurnStop(ref direction);
+            }
+            else
+            {
+                // Цель появилась — любая патрульная стоянка мгновенно снимается.
+                patrolTurning = false;
+            }
+
+            bool mayMove = !holdingAfterStrike && !attackPlaying && !patrolTurning;
 
             UpdateStuckCheck(body != null ? body.linearVelocity : Vector3.zero, mayMove);
 
+            // Поворот выполняется ВСЕГДА — и во время ходьбы, и во время
+            // поворотной стоянки (иначе робот бы развернулся на месте и не
+            // смог начать движение).
             if (direction.sqrMagnitude > 0.0001f) FaceDirection(direction, turnSpeed, Time.deltaTime);
 
             float speed = !mayMove ? 0f : engaged ? moveSpeed : PatrolSpeed;
@@ -364,9 +404,11 @@ namespace CarGame.Combat
                 else
                 {
                     desired = walkState;                 // патруль в движении — Walk
-                    // Робот реально идёт, а плановая передышка патруля ещё не
-                    // истекла — сбрасиваем её, чтобы логика движения и анимации
-                    // не расходились (иначе сразу после Walk прыгнул бы Idle).
+                    // Робот реально идёт, а базовый класс успел поставить
+                    // плановую паузу (pauseUntil) — снимаем её немедленно:
+                    // движение и анимация не должны расходиться с таймерами
+                    // EnemyBase. Иначе сразу после Walk прыгнул бы Idle,
+                    // хотя робот едет (симптом «идёт в анимации Idle»).
                     if (Time.time < patrolWaitUntil) pauseUntil = Time.time;
                 }
                 ApplyState(desired);
@@ -384,6 +426,126 @@ namespace CarGame.Combat
             strikeHoldTimer = attackStopDuration;
             PlayAttack();
             Strike(Target, strikeDistance);
+        }
+
+        /// <summary>
+        /// ПАТРУЛЬ: робот ходит ВСЕГДА; встать он имеет право только чтобы
+        /// повернуть. Вызывается каждый кадр Update() в режиме патруля
+        /// (цели нет). Логика:
+        ///   1) Робот идёт к активной точке маршрута (patrolPoint или точка
+        ///      блуждания рядом со спавном). Идёт — анимация Walk.
+        ///   2) Дошёл до точки (либо упёрся в препятствие и почти остановился) —
+        ///      включается поворотная стоянка: движение запрещено, анимация
+        ///      честно переключается в Idle, робот на месте доворачивается к
+        ///      СЛЕДУЮЩЕЙ точке маршрута.
+        ///   3) Как только направление совпало с целевым (dot >= порога) либо
+        ///      сработал предохранитель patrolTurnMaxWait — стоянка снимается,
+        ///      робот немедленно трогается к новой точке (Walk).
+        /// Долгих беспричинных остановок больше быть не может: единственная
+        /// легальная причина стоять на патруле — незавершённый поворот,
+        /// ограниченный по времени.
+        /// </summary>
+        private void UpdatePatrolTurnStop(ref Vector3 direction)
+        {
+            if (patrolTurning)
+            {
+                // Стоим и доворачиваемся к новой точке маршрута.
+                bool aligned = patrolTurnTo.sqrMagnitude > 0.0001f
+                    && Vector3.Dot(transform.forward, patrolTurnTo) >= patrolTurnAlignDot;
+                bool failsafe = Time.time >= patrolTurnEndsAt;
+
+                if (aligned || failsafe)
+                {
+                    // Поворот завершён (или страховка сработала) — сразу идём.
+                    patrolTurning = false;
+                    ForceNewPatrolRoute();
+                    direction = FlatTowards(PatrolDestinationNow());
+                }
+                else
+                {
+                    // Ещё крутимся на месте: направление для FaceDirection —
+                    // целевое, движение — нулевое (Update обнулит его по
+                    // mayMove == false).
+                    direction = patrolTurnTo;
+                }
+
+                return;
+            }
+
+            // Обыжная ходьба по маршруту.
+            Vector3 dest = PatrolDestinationNow();
+            Vector3 toDest = FlatTowards(dest);
+
+            if (toDest.sqrMagnitude < 0.0001f)
+            {
+                // Точка достигнута — встаём и поворачиваем к следующей.
+                BeginPatrolTurnStop(NextPatrolDestinationExcludingCurrent());
+                direction = patrolTurnTo;
+                return;
+            }
+
+            // Робот едет, но почти стоит (упёрся в препятствие/стену) — тоже
+            // законная поворотная стоянка: сменим точку, чтобы не топтаться.
+            float horizontalSpeed = body != null
+                ? Vector3.ProjectOnPlane(body.linearVelocity, Vector3.up).magnitude
+                : 0f;
+            if (horizontalSpeed < MovingSpeedThreshold * 0.5f && !IsPathClear(toDest))
+            {
+                BeginPatrolTurnStop(NextPatrolDestinationExcludingCurrent());
+                direction = patrolTurnTo;
+                return;
+            }
+
+            direction = toDest;
+        }
+
+        /// <summary>Запустить поворотную стоянку к направлению target.</summary>
+        private void BeginPatrolTurnStop(Vector3 targetDirection)
+        {
+            patrolTurning = true;
+            patrolTurnTo = targetDirection;
+            // Жёсткий предел: дольше patrolTurnMaxWait секунд на поворот робот
+            // не имеет права стоять ни при каких обстоятельствах.
+            patrolTurnEndsAt = Time.time + Mathf.Max(0.2f, patrolTurnMaxWait);
+        }
+
+        /// <summary>Текущая цель патруля базового класса (точка маршрута или
+        /// точка блуждания).</summary>
+        private Vector3 PatrolDestinationNow()
+        {
+            return ResolveDestination();
+        }
+
+        /// <summary>
+        /// Направление к НОВОЙ точке маршрута: текущая цель исключена из
+        /// выбора, чтобы поворот всегда был разворотом к следующему отрезку,
+        /// а не «назад к той же точке».
+        /// </summary>
+        private Vector3 NextPatrolDestinationExcludingCurrent()
+        {
+            Vector3 current = PatrolDestinationNow();
+
+            // Базовый класс выбирает новую точку блуждания сам; подстрахуемся
+            // и вручную возьмём случайную точку в радиусе патруля вокруг
+            // спавна, отличную от текущей цели.
+            for (int attempt = 0; attempt < 8; attempt++)
+            {
+                Vector2 offset = Random.insideUnitCircle * PatrolRadius;
+                Vector3 candidate = SpawnPoint + new Vector3(offset.x, 0f, offset.z);
+                Vector3 flat = FlatTowards(candidate - transform.position);
+                if (flat.sqrMagnitude < 0.0001f) continue;
+                // Не разворачиваемся туда, куда уже шли (иначе поворот = 0°).
+                if (Vector3.Dot(flat, FlatTowards(current - transform.position)) > 0.9f) continue;
+                return flat.normalized;
+            }
+
+            Vector3 fallback = FlatTowards(transform.right);
+            return fallback.sqrMagnitude > 0.0001f ? fallback.normalized : transform.forward;
+        }
+
+        private static Vector3 FlatTowards(Vector3 vector)
+        {
+            return Vector3.ProjectOnPlane(vector, Vector3.up);
         }
 
         /// <summary>Видна ли цель напрямую (без проверки сектора обзора).</summary>
@@ -630,13 +792,23 @@ namespace CarGame.Combat
         {
             if (body == null) return;
 
+            // Гарантии жёсткой связи «анимация ↔ движение»:
+            //   • speed <= 0 или пустое направление — робот СТОИТ: скорость
+            //     гасится до нуля быстро (ускоренным торможением), иначе он по
+            //     инерции ещё долго едет и аниматор честно держит Walk, хотя
+            //     план — стоять (симптом «стоит, но играет Walk»);
+            //   • speed > 0 — целевая скорость достигается тем же быстрым
+            //     ускорением, без «вязкого» разгона на доли метра.
+            float brakeRate = moveSpeed * 12f;
+            float accelRate = moveSpeed * 16f;
+
             Vector3 velocity = body.linearVelocity;
             Vector3 flatVelocity = Vector3.ProjectOnPlane(velocity, Vector3.up);
 
             if (direction.sqrMagnitude < 0.0001f || speed <= 0.01f)
-                flatVelocity = Vector3.MoveTowards(flatVelocity, Vector3.zero, moveSpeed * 4f * Time.deltaTime);
+                flatVelocity = Vector3.MoveTowards(flatVelocity, Vector3.zero, brakeRate * Time.deltaTime);
             else if (IsPathClear(direction) || climbing)
-                flatVelocity = Vector3.MoveTowards(flatVelocity, direction.normalized * speed, moveSpeed * 8f * Time.deltaTime);
+                flatVelocity = Vector3.MoveTowards(flatVelocity, direction.normalized * speed, accelRate * Time.deltaTime);
             else
                 flatVelocity = Vector3.MoveTowards(flatVelocity, direction.normalized * speed * 0.15f, moveSpeed * 2f * Time.deltaTime);
 
