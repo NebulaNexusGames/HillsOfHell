@@ -276,6 +276,9 @@ namespace CarGame.AI
         /// <summary>Есть ли у проёма полотно двери.</summary>
         public bool HasDoor => door != null;
 
+        /// <summary>Полотно двери этого проёма (null — открытая арка).</summary>
+        public BuildingDoor Door => door;
+
         /// <summary>Открыто ли полотно (или полотна вовсе нет — открытая арка).</summary>
         public bool IsOpenOrAbsent => door == null || !door.IsClosed();
 
@@ -351,10 +354,39 @@ namespace CarGame.AI
             if (Time.time < nextDoorCheckTime) return;
             nextDoorCheckTime = Time.time + 0.5f;
 
-            if (IsAnyPlayerNearby()) return;
+            // Игрок рядом — штатное открытие откладывается: приоритет у
+            // взаимодействия игрока. Но если моб уже упёрся в полотно телом
+            // (contact), дверь ВЫЛОМЫВАЕТСЯ в любую сторону от него — иначе
+            // запертая изнутри дверь делала убежище недосягаемым.
+            bool playerNear = IsAnyPlayerNearby();
+            if (!playerNear || contact)
+            {
+                door.Open();
+                if (contact) door.KickFrom(contact);
+            }
 
-            door.Open();
+            // Дверь упорно не открывается (locked-запрет, заклин): после
+            // нескольких безрезультатных попыток моб выбивает её физически —
+            // полотно становится полностью свободным телом.
+            if (door.IsClosed())
+            {
+                blockedAttempts++;
+                if (blockedAttempts >= BreakAfterFailedOpens && contact)
+                {
+                    door.BreakOpen(contact);
+                    blockedAttempts = 0;
+                }
+            }
+            else
+            {
+                blockedAttempts = 0;
+            }
         }
+
+        /// <summary>Число подряд безрезультатных попыток открыть дверь мобом
+        /// (дверь осталась закрытой) — порог на выламывание физикой.</summary>
+        private int blockedAttempts;
+        private const int BreakAfterFailedOpens = 3;
 
         private bool IsAnyPlayerNearby()
         {
