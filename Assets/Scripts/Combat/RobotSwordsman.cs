@@ -60,6 +60,9 @@ namespace CarGame.Combat
         [Tooltip("Булев параметр Animator, запускающий лупнутую анимацию смерти " +
                  "(тряску). Пока она играется и идёт таймер до взрыва, робот не двигается.")]
         [SerializeField] private string dieParameter = "Die";
+        [Tooltip("Имя состояния Death в Animator Controller — туда скрипт принудительно " +
+                 "возвращает проигрывание, если анимация залипла на первом кадре.")]
+        [SerializeField] private string deathStateName = "Death";
         [Tooltip("Таймер от запуска анимации смерти до взрыва, СЕКУНД. Всё это время " +
                  "робот трясётся (луп анимации) и стоит на месте.")]
         [SerializeField] private float deathExplodeDelay = 1.5f;
@@ -672,11 +675,11 @@ namespace CarGame.Combat
 
         /// <summary>
         /// Поддержание лупа анимации смерти. Пока робот «умирает», каждый кадр:
-        /// гарантируем Bool-параметр dieParameter == true и прокручиваем
-        /// аниматор принудительно (UpdateAnimator), чтобы тряска реально
-        /// игралась по кругу, а не залипала на первом кадре. Вызов
-        /// UpdateAnimator из скрипта безопасен: Unity сама не вызывает его
-        /// второй раз в этом кадре (флаг сбрасывается при реплеи).
+        /// гарантируем Bool-параметр dieParameter == true и явно продвигаем
+        /// состояние аниматора через Play() с перезапуском, чтобы тряска
+        /// реально игралась по кругу, а не залипала на первом кадре.
+        /// Примечание: у Animator нет метода UpdateAnimator — единственный
+        /// способ вручную протолкнуть анимацию из скрипта это Play/PixelInTime.
         /// </summary>
         private void ForceDeathAnimation()
         {
@@ -689,7 +692,19 @@ namespace CarGame.Combat
                 animator.SetBool(dieParameter, true);
             }
 
-            animator.UpdateAnimator(Time.deltaTime, 0);
+            // Страховка от «залипания»: если аниматор по какой-то причине всё
+            // ещё показывает не состояние Death (например, переход не сработал),
+            // принудительно запускаем Death — Play() для уже играющего состояния
+            // анимацию НЕ перезапускает, поэтому луп тряски идёт плавно.
+            // Держим скорость 1: в контроллере у Death стоит m_Speed 4 — клип
+            // крутился в 4 раза быстрее, и короткая тряска «кончалась» почти
+            // мгновенно, что выглядело как застывший кадр.
+            AnimatorStateInfo current = animator.GetCurrentAnimatorStateInfo(0);
+            if (!current.IsName(deathStateName))
+            {
+                animator.Play(deathStateName, 0, 0f);
+            }
+            animator.speed = 1f;
         }
 
         /// <summary>
