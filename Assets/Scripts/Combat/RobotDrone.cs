@@ -598,7 +598,17 @@ namespace CarGame.Combat
 
             if (!frozen) orbitAngle += orbitSpeed * Time.deltaTime;
 
-            Vector3 anchor = Target.transform.position + Vector3.up * hoverHeight;
+            Vector3 targetPosition = Target.transform.position;
+
+            // Дрон сам меняет высоту по ситуации: цель может быть внутри
+            // здания (игрок спрятался) или на другой высоте — точка зависания
+            // берётся над целью, а «протискивание» сквозь дверной проём/свод
+            // делает ApplyDoorwayAltitude внутри Move(). Единственная страховка
+            // снизу: если под самой точкой зависания нет пола и есть пол далеко
+            // внизу, не даём целевой точке уходить ниже безопасного минимума.
+            float anchorY = targetPosition.y + hoverHeight;
+
+            Vector3 anchor = new Vector3(targetPosition.x, anchorY, targetPosition.z);
             Vector3 offset = Quaternion.AngleAxis(Mathf.Rad2Deg * orbitAngle, Vector3.up) * Vector3.right * orbitRadius;
             Vector3 destination = anchor + offset;
 
@@ -622,12 +632,9 @@ namespace CarGame.Combat
 
         private void Move(Vector3 direction, float speed)
         {
-            // Проактивный проход дверного проёма: если дрон «привязан» к
-            // проёму (флаг Flying Robot + активный DoorwayVolume), заранее
-            // снижает целевую высоту так, чтобы корпус вошёл под свод двери.
-            // Если свод ниже droneMinCeiling — высота не меняется: такой
-            // проём для дрона закрыт (в него он не полезет и через
-            // FitsRobot, но на всякий случай блокируем и здесь).
+            // Проактивное изменение высоты по ситуации: проход сквозь дверной
+            // проём (снижение под свод либо подъём над крышей, если цель выше
+            // проёма) — см. ApplyDoorwayAltitude.
             Vector3 doorwayVelocity = ApplyDoorwayAltitude(direction);
             if (doorwayVelocity != Vector3.zero)
             {
@@ -672,11 +679,14 @@ namespace CarGame.Combat
         }
 
         /// <summary>
-        /// Проактивное снижение под свод дверного проёма. Если дрон привязан
-        /// к активному проёму и горизонтально приближается к нему (или уже
-        /// внутри зоны), возвращает направление с подкорректированной
-        /// вертикальной составляющей — к высоте прохода. Вне зоны снижения
-        /// возвращает Vector3.zero (направление не трогать).
+        /// Проактивное изменение высоты дрона по ситуации: проход сквозь
+        /// дверной проём (снижение под свод или, наоборот, подъём над крышей,
+        /// если цель выше проёма) либо выход на высоту цели, когда игрок
+        /// спрятался в здании и прямой путь к нему лежит через дверь.
+        /// Если дрон привязан к активному проёму и горизонтально приближается
+        /// к нему (или уже внутри зоны), возвращает направление с
+        /// подкорректированной вертикальной составляющей — к нужной высоте
+        /// прохода. Вне зоны снижения возвращает Vector3.zero (не трогать).
         /// </summary>
         private Vector3 ApplyDoorwayAltitude(Vector3 direction)
         {
@@ -688,43 +698,109 @@ namespace CarGame.Combat
                 center.z - transform.position.z);
             float horizontalDistance = flatToDoor.magnitude;
 
-            // Снижение начинается заранее: у самой двери маневрировать поздно.
+            // Манёвр начинается заранее: у самой двери менять высоту поздно.
             float lead = Mathf.Max(1f, doorwayDescentLead);
             bool approaching = horizontalDistance <= lead + doorway.HalfWidthAlongWall;
             if (!approaching) return Vector3.zero;
 
-            // Не соваться в проём, если цель с ЭТОЙ ЖЕ стороны стены и до неё
-            // есть прямой путь — иначе дрон будет снижаться «в никуда» у любой
-            // двери рядом. Но если маршрут уже ведёт через дверь (ResolveDestination
-            // вернул точку проёма) — direction смотрит в створ, этого достаточно.
+            // Не соваться в проём, если маршрут не ведёт через него:
+            // направление полёта должно смотреть примерно в створ двери
+            // (иначе дрон снижался бы «в никуда» у любой двери рядом).
+            // Исключение — цель за этой же дверью: тогда тянемся к ней в любом
+            // случае, даже если текущий вектор ещё доворачивается.
             Vector3 toCenter = center - transform.position;
+            bool targetBeyondDoor = HasTarget && Target != null && !Target.Equals(null)
+                && IsTargetHigherOrBeyond(doorway);
             if (direction.sqrMagnitude > 0.0001f
                 && Vector3.Dot(direction.normalized, toCenter.normalized) < 0.25f
-                && horizontalDistance > 1.2f)
+                && horizontalDistance > 1.2f
+                && !targetBeyondDoor)
             {
                 return Vector3.zero;
             }
 
-            if (!doorway.TryGetDronePassHeight(BodyDiameter, BodyHeight, out float passY))
+            // --- Выбор целевой высоты ---
+            // 1) Обычный случай: цель ниже или на уровне проёма — идём ПОД
+            //    сводом двери (снижение).
+            // 2) Цель ВЫШЕ свода проёма (игрок спрятался в здании на втором
+            //    ярусе/крыше, либо сам летит высоко): корпус под свод вести
+            //    бессмысленно — вместо этого поднимаемся НАД сводом, чтобы
+            //    перелететь через крышу/потолок в точку цели.
+            float desiredY;
+            bool canPassUnder = doorway.TryGetDronePassHeight(BodyDiameter, BodyHeight, out float passUnderY);
+
+            float ceilingTop = doorway.FloorY + doorway.CeilingHeight;
+            float targetY = HasTarget && Target != null && !Target.Equals(null)
+                ? Target.transform.position.y
+                : float.MinValue;
+
+            bool targetAboveCeiling = targetY > ceilingTop + BodyHeight * 0.5f;
+
+            if (targetAboveCeiling && doorway.TryGetDroneAboveCeilingHeight(BodyHeight, out float passOverY))
             {
-                // Свод слишком низкий для дрона: не снижаться и не лезть —
-                // чуть приподняться над сводом, чтобы не цеплять косяк сверху,
-                // пока активный проём не сменится.
-                float ceilingTop = doorway.FloorY + doorway.CeilingHeight;
-                Vector3 avoid = direction;
-                avoid.y = Mathf.Clamp((ceilingTop + BodyHeight) - transform.position.y,
+                // Подъём над сводом: цель выше двери — летим поверху.
+                desiredY = passOverY;
+            }
+            else if (canPassUnder)
+            {
+                desiredY = passUnderY;
+            }
+            else if (doorway.TryGetDroneThroughHeight(BodyHeight, out float throughY))
+            {
+                // Свод формально ниже droneMinCeiling, но физическая щель
+                // между полом и сводом есть — идём через неё (центр щели).
+                desiredY = throughY;
+            }
+            else
+            {
+                // Сквозь этот проём корпус не проходит вообще: не лезть и
+                // приподняться над сводом, чтобы не цеплять косяк, пока
+                // активный проём не сменится.
+                float avoid = 0f;
+                Vector3 result = direction;
+                result.y = Mathf.Clamp((ceilingTop + BodyHeight + 0.2f) - transform.position.y,
                     -moveSpeed * 0.5f, moveSpeed * 0.5f);
-                return avoid.sqrMagnitude > 0.0001f ? avoid : Vector3.zero;
+                return result.sqrMagnitude > 0.0001f || avoid != 0f ? result : Vector3.zero;
             }
 
-            // Плавно ведём Y к высоте прохода: вертикальная компонента скорости
-            // пропорциональна ошибке высоты (П-регулятор с ограничением).
-            float heightError = passY - transform.position.y;
+            // Плавное ведение Y к целевой высоте: вертикальная компонента
+            // скорости пропорциональна ошибке высоты (П-регулятор с ограничением).
+            float heightError = desiredY - transform.position.y;
             float verticalSpeed = Mathf.Clamp(heightError * 2f, -moveSpeed * 0.6f, moveSpeed * 0.6f);
 
-            Vector3 result = direction;
-            result.y = verticalSpeed;
-            return result;
+            Vector3 answer = direction;
+            answer.y = verticalSpeed;
+            return answer;
+        }
+
+        /// <summary>
+        /// Находится ли цель «по ту сторону» стены активного проёма (проекции
+        /// robot→door и robot→target на ось прохода одного знака, цель дальше
+        /// двери) — значит, маршрут к ней лежит через эту дверь.
+        /// </summary>
+        private bool IsTargetHigherOrBeyond(DoorwayVolume doorway)
+        {
+            if (Target == null || Target.Equals(null)) return false;
+
+            Vector3 passDir = doorway.PassDirection;
+            Vector3 selfToDoor = doorway.Center - transform.position;
+            Vector3 selfToTarget = Target.transform.position - transform.position;
+
+            float doorSide = Vector3.Dot(selfToDoor, passDir);
+            float targetSide = Vector3.Dot(selfToTarget, passDir);
+
+            // Одна сторона стены и цель ближе двери — дверь ни при чём.
+            if (doorSide * targetSide <= 0f) return false;
+            if (Mathf.Abs(targetSide) <= Mathf.Abs(doorSide)) return false;
+
+            // Боковое смещение цели в пределах створа проёма (+запас).
+            Vector3 alongWall = Vector3.Cross(Vector3.up, passDir);
+            if (alongWall.sqrMagnitude < 0.0001f) return false;
+            alongWall.Normalize();
+
+            float lateralDiff = Vector3.Dot(selfToTarget, alongWall)
+                - Vector3.Dot(selfToDoor, alongWall);
+            return Mathf.Abs(lateralDiff) <= doorway.HalfWidthAlongWall + BodyDiameter + 1f;
         }
 
         /// <summary>
