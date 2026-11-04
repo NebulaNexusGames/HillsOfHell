@@ -176,9 +176,11 @@ namespace CarGame.Combat
         // Накопитель мигания зелёным в фазе Locked.
         private float blinkElapsed;
         // Фиксированная точка вращения луча (позиция, где робот встал на
-        // стоянку). Пока луч крутится — сам робот НЕ вращается и не двигается;
-        // луч всегда выходит из этой точки, даже когда робот уже идёт по нему
-        // (основание линии следует за роботом, направление заморожено).
+        // стоянку). Пока луч крутится — сам робот НЕ вращается и не двигается.
+        // ВАЖНО: после заморозки луч остаётся ровно там, где был создан —
+        // его основание НЕ закрепляется за роботом и никуда не скользит.
+        // Робот идёт к неподвижному концу луча; дошёл — «удаляет» старый луч
+        // (гасит подсветку) и создаёт новый на месте новой стоянки.
         private Vector3 scanOrigin;
         // Фактическая длина луча после «самосжатия»: если во все стороны
         // стены, сканер уменьшает длину луча, пока не найдёт свободное
@@ -333,9 +335,11 @@ namespace CarGame.Combat
             {
                 // Сбрасываем и сканер: иначе gizmoLineActive останется true,
                 // а patrolTurning — false, и «призрак» замороженной линии
-                // будет висеть над роботом до следующей стоянки.
+                // будет висеть над роботом до следующей стоянки. rayFrozen
+                // сбрасываем тоже — старый луч полностью «удаляется».
                 patrolTurning = false;
                 gizmoLineActive = false;
+                rayFrozen = false;
             }
 
             // Тик пост-ударной стойки (секунды).
@@ -401,23 +405,20 @@ namespace CarGame.Combat
             {
                 UpdatePatrolTurnStop(ref direction);
 
-                // Пока робот идёт по выбранному курсу, зелёная линия-«рельс»
-                // обновляется каждый кадр: основание скользит вместе с роботом,
-                // направление остаётся замороженным (видно в Scene-вью).
-                if (!patrolTurning && gizmoLineActive && Time.time < scanFadeUntil)
-                {
-                    Vector3 railBase = transform.position + Vector3.up * 0.5f;
-                    gizmoLineStart = railBase;
-                    gizmoLineEnd = railBase +
-                        FlatTowards(scanChosenDirection).normalized * currentScanLength;
-                    gizmoLineColor = new Color(0.1f, 1f, 0.25f, 0.6f);
-                }
+                // Луч НЕ закрепляется за роботом: пока мечник идёт по выбранному
+                // курсу, «замороженная» линия остаётся висеть ровно там, где была
+                // создана (gizmoLineStart/gizmoLineEnd заданы один раз при
+                // заморозке сканера и больше не сдвигаются). Робот доходит до её
+                // конца — старый луч гасится («удаляется»), на новой стоянке
+                // сканер создаёт новый луч из актуальной позиции робота.
             }
             else
             {
-                // Цель появилась — любая патрульная стоянка мгновенно снимается.
+                // Цель появилась — любая патрульная стоянка мгновенно снимается,
+                // старый луч «удаляется» (он больше не рисуется).
                 patrolTurning = false;
                 gizmoLineActive = false;
+                rayFrozen = false;
             }
 
             bool mayMove = !holdingAfterStrike && !attackPlaying && !patrolTurning;
@@ -531,8 +532,10 @@ namespace CarGame.Combat
                 {
                     // Выбор зафиксирован: трогаемся ВДОЛЬ замороженной линии.
                     patrolTurning = false;
-                    // Замороженная линия остаётся видимой (зелёная), пока
-                    // робот идёт по ней — видно, куда именно он направился.
+                    // Замороженная линия остаётся видимой (зелёная) ровно там,
+                    // где была создана — основание НЕ привязано к роботу.
+                    // Координаты gizmoLineStart/gizmoLineEnd фиксируются один
+                    // раз в момент заморозки и до конца пути не меняются.
                     scanFadeUntil = Time.time + Mathf.Max(1f, currentScanLength) /
                                     Mathf.Max(0.5f, PatrolSpeed) + 1f;
                     SetPatrolRouteAlongChosenDirection();
@@ -667,6 +670,9 @@ namespace CarGame.Combat
             blinkElapsed = 0f;
             scanFirstClearTime = -1f;
             stuckWhileWalking = 0f;
+            // Старый луч «удаляется»: флаг заморозки сбрасывается, новая
+            // стоянка создаст собственный луч из актуальной позиции робота.
+            rayFrozen = false;
             // Точка вращения луча фиксируется: робот стоит и не двигается.
             scanOrigin = transform.position + Vector3.up * 0.5f;
             currentScanLength = Mathf.Max(1f, patrolScanLength);
@@ -754,24 +760,56 @@ namespace CarGame.Combat
 
             // Обновляем параметры отрисовки линии для Gizmos (текущий кадр).
             gizmoLineActive = true;
-            Vector3 shown = scanPhase == ScanPhaseScanning
-                ? CurrentScanWorldDirection()
-                : scanChosenDirection;
-            gizmoLineStart = scanOrigin;
-            gizmoLineEnd = scanOrigin + shown.normalized * currentScanLength;
 
             if (scanPhase == ScanPhaseScanning)
             {
+                // Луч ещё крутится вокруг стоящего робота — линия следует за
+                // текущим углом сканирования, основание фиксировано на точке
+                // стоянки (scanOrigin).
+                Vector3 shown = CurrentScanWorldDirection();
+                gizmoLineStart = scanOrigin;
+                gizmoLineEnd = scanOrigin + shown.normalized * currentScanLength;
                 // Пока линия крутится — она белая.
                 gizmoLineColor = Color.white;
             }
             else
             {
-                // Замороженная линия мигает зелёным (~2 вспышки в секунду).
-                float pulse = 0.55f + 0.45f * Mathf.Sin(blinkElapsed * Mathf.PI * 4f);
-                gizmoLineColor = new Color(0.1f, 1f, 0.25f, pulse);
+                // Направление заморозлено. Линия «создана» один раз и больше
+                // НИКУДА не сдвигается: начало — ровно точка стоянки, конец —
+                // точка на расстоянии длины луча по выбранному направлению.
+                // Именно к этой неподвижной конечной точке робот и пойдёт.
+                if (!rayFrozen)
+                {
+                    rayFrozen = true;
+                    frozenRayStart = scanOrigin;
+                    frozenRayEnd = scanOrigin +
+                        FlatTowards(scanChosenDirection).normalized * currentScanLength;
+                }
+
+                gizmoLineStart = frozenRayStart;
+                gizmoLineEnd = frozenRayEnd;
+
+                if (scanPhase == ScanPhaseLocked)
+                {
+                    // Замороженная линия мигает зелёным (~2 вспышки в секунду).
+                    float pulse = 0.55f + 0.45f * Mathf.Sin(blinkElapsed * Mathf.PI * 4f);
+                    gizmoLineColor = new Color(0.1f, 1f, 0.25f, pulse);
+                }
+                else
+                {
+                    // Робот уже идёт по лучу — он остаётся видимым, но ровно
+                    // там, где был создан (без «прилипания» к позиции мечника).
+                    gizmoLineColor = new Color(0.1f, 1f, 0.25f, 0.6f);
+                }
             }
         }
+
+        // ===== НЕПОДВИЖНЫЙ ЛУЧ ПОСЛЕ ЗАМОРОЗКИ =====
+        // Флаг «луч зафиксирован в мире»: координаты ниже ставятся ровно один
+        // раз — в момент выбора направления — и более не пересчитываются.
+        private bool rayFrozen;
+        private Vector3 frozenRayStart;
+        private Vector3 frozenRayEnd;
 
         /// <summary>Минимальная длина луча при самосжатии сканера.</summary>
         private const float MinScanLength = 1f;
@@ -834,14 +872,20 @@ namespace CarGame.Combat
             dir.Normalize();
 
             // Идём ровно до конца луча — на его фактическую (возможно,
-            // укороченную сканером) длину.
+            // укороченную сканером) длину. Отправная точка — НЕ текущая
+            // позиция робота, а основание замороженного луча (scanOrigin):
+            // робот в этот момент стоит ровно там же, но при малом смещении
+            // за время мигания цель остаётся привязана к созданному лучу,
+            // а не «едет» вместе с роботом.
             float distance = currentScanLength;
+            Vector3 rayBase = rayFrozen ? frozenRayStart : transform.position + Vector3.up * 0.5f;
 
             if (!HasPatrolPoints)
             {
                 // Wander-режим: выставляем активную точку блуждания прямо по
                 // лучу — ResolvePatrolDestination вернёт её и робот пойдёт туда.
-                Vector3 destination = transform.position + dir * distance;
+                Vector3 destination = rayBase + dir * distance;
+                destination.y = transform.position.y;
                 // Держим точку в разумной близости к спавну, чтобы не убежать.
                 Vector3 flatFromSpawn = FlatTowards(destination - SpawnPoint);
                 if (flatFromSpawn.magnitude > PatrolRadius)
@@ -856,7 +900,8 @@ namespace CarGame.Combat
                 // Режим точек маршрута: тоже ведём робота по лучу — иначе
                 // PickNextPatrolPoint возьмёт ближайшую точку в другом
                 // направлении и выбор сканера будет проигнорирован.
-                WanderDestination = transform.position + dir * distance;
+                WanderDestination = rayBase + dir * distance;
+                WanderDestination.y = transform.position.y;
             }
         }
 
@@ -869,16 +914,18 @@ namespace CarGame.Combat
         private void DrawScannerGizmo()
         {
             // Во время ходьбы по выбранному курсу показываем замороженную
-            // линию зелёным: основание следует за роботом, направление —
-            // прежнее. Гаснет, когда робот дошёл до конца луча (или истёк
-            // срок подсветки) — тогда начинается новая стоянка.
+            // линию зелёным РОВНО там, где она была создана: начало и конец
+            // луча неподвижны в мире (frozenRayStart/frozenRayEnd) — линия НЕ
+            // следует за роботом. Гаснет («удаляется»), когда робот дошёл до
+            // её конца (или истёк срок подсветки) — тогда начинается новая
+            // стоянка и сканер создаст новый луч из актуальной позиции.
             if (!patrolTurning)
             {
                 if (!gizmoLineActive || Time.time >= scanFadeUntil) return;
-                Vector3 basePos = transform.position + Vector3.up * 0.5f;
-                Gizmos.color = new Color(0.1f, 1f, 0.25f, 0.6f);
-                Gizmos.DrawLine(basePos, basePos + scanChosenDirection.normalized * currentScanLength);
-                Gizmos.DrawSphere(basePos + scanChosenDirection.normalized * currentScanLength, 0.08f);
+                if (!rayFrozen) return;
+                Gizmos.color = gizmoLineColor;
+                Gizmos.DrawLine(frozenRayStart, frozenRayEnd);
+                Gizmos.DrawSphere(frozenRayEnd, 0.08f);
                 return;
             }
 
