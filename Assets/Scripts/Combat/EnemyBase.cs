@@ -181,6 +181,20 @@ namespace CarGame.Combat
         protected float PatrolWaitTime => patrolWaitTime;
         protected float PatrolPointTolerance => patrolPointTolerance;
         protected Vector3 SpawnPoint => spawnPoint;
+        /// <summary>
+        /// Активная точка блуждания (wander-режим, когда patrolPoints не заданы).
+        /// Наследники могут выставить её вручную, чтобы задать маршрут вдоль
+        /// произвольного направления (например, по «замороженной» линии-сканеру
+        /// мечника) — робот просто пойдёт к этой точке, без пауз.
+        /// </summary>
+        protected Vector3 WanderDestination
+        {
+            get => wanderTarget;
+            set => wanderTarget = value;
+        }
+
+        /// <summary>Есть ли у робота назначенные точки маршрута (patrolPoints).</summary>
+        protected bool HasPatrolPoints => patrolPoints != null && patrolPoints.Length > 0;
         public Health Target { get; protected set; }
         public bool HasTarget => Target != null && !Target.IsDead;
 
