@@ -60,6 +60,9 @@ namespace CarGame.Combat
         [Tooltip("Булев параметр Animator, запускающий лупнутую анимацию смерти " +
                  "(тряску). Пока она играется и идёт таймер до взрыва, робот не двигается.")]
         [SerializeField] private string dieParameter = "Die";
+        [Tooltip("Имя состояния Death в Animator Controller — туда скрипт принудительно " +
+                 "возвращает проигрывание, если анимация залипла на первом кадре.")]
+        [SerializeField] private string deathStateName = "Death";
         [Tooltip("Таймер от запуска анимации смерти до взрыва, СЕКУНД. Всё это время " +
                  "робот трясётся (луп анимации) и стоит на месте.")]
         [SerializeField] private float deathExplodeDelay = 1.5f;
@@ -136,15 +139,16 @@ namespace CarGame.Combat
         private bool dying;
         // Флаг «взрыв уже запущен» — защита от двойного Explode().
         private bool exploded;
-        // Момент смерти. Таймер deathExplodeDelay — в РЕАЛЬНЫХ секундах,
-        // поэтому отсчёт ведётся по НАКОПЛЕННОМУ Time.unscaledDeltaTime, а не
-        // по разнице Time.unscaledTime. Причина: на некоторых сборках/сценах
-        // глобальное unscaledTime может быть рассинхронизировано (например,
-        // кастомный fixed/unscaled timestep), и тогда разница двух снимков
-        // вообще не равна прошедшему реальному времени — взрыв не наступал
-        // НИКОГДА, сколько бы ни ждали. Накопление дельты заведомо даёт ровно
-        // столько секунд, сколько прошло: 10 в инспекторе = 10 секунд.
+        // Таймер deathExplodeDelay — в РЕАЛЬНЫХ секундах: накопленная
+        // Time.unscaledDeltaTime (паузы с timeScale = 0 его не растягивают).
         private float deathElapsed;
+        // Момент последнего тика состояния смерти (реальное время). Нужен для
+        // самовосстановления: если Update() мечника перестали вызывать
+        // (компонент выключили/удалили, скрипт упал с исключением), Unity
+        // также перестаёт обновлять Animator — тряска залипает на первом кадре,
+        // а взрыв не наступает никогда. OnDisable и OnAnimatorMove замечают
+        // это и возвращают состояние смерти в работу.
+        private float lastDeathTickUnscaledTime = -1f;
         // Зацикленный источник звука тряски на время предсмертной агонии.
         private AudioSource deathRattleSource;
 
@@ -188,6 +192,16 @@ namespace CarGame.Combat
 
             if (animator == null) animator = GetComponentInChildren<Animator>();
 
+            // КЛЮЧЕВОЕ для анимации смерти: Unity обновляет (evaluator-тик)
+            // компонент Animator только пока на объекте живёт ХОТЬ ОДИН
+            // активный MonoBehaviour. Если в момент смерти скрипт мечника
+            // окажется выключен/удалён (сторонние системы «убирают мёртвых»,
+            // отключают компоненты), аниматор мгновенно замирает ровно на
+            // первом кадре Death — ровно тот симптом, что наблюдался.
+            // keepAnimatorControllerStateOnDisable сохраняет состояние
+            // контроллера при случайном выключении Animator'а.
+            if (animator != null) animator.keepAnimatorControllerStateOnDisable = true;
+
             BaseAwake();
 
             ApplySoundClips(stepSound, null, null, null, alertSound, null,
@@ -201,17 +215,19 @@ namespace CarGame.Combat
             // ВАЖНО: проверка dying идёт ДО проверки IsDead. Health.IsDead
             // становится true в том же кадре, что и событие Died (то есть ещё
             // до первого Update после смерти). Старый код при первом же кадре
-            // после выхода на строку «IsDead — выходи» вообще переставал тикать
-            // (UpdateAnimator вызывается только из активных скриптов, поэтому
-            // смерть выглядела как «залипший первый кадр»). Теперь мёртвый,
-            // но ещё не взорвавшийся мечник продолжает крутить луп тряски и
-            // отсчёт до взрыва.
+            // после выхода на строку «IsDead — выходи» вообще переставал тикать,
+            // поэтому смерть выглядела как «залипший первый кадр», а взрыв не
+            // наступал никогда. Теперь мёртвый, но ещё не взорвавшийся мечник
+            // продолжает крутить луп тряски и отсчёт до взрыва.
             if (dying)
             {
                 // Отсчёт в реальных секундах накоплением unscaledDeltaTime:
                 // паузы/меню с timeScale = 0 его не растягивают, а на обычной
-                // скорости 10 в инспекторе = ровно 10 секунд.
-                deathElapsed += Time.unscaledDeltaTime;
+                // скорости 10 в инспекторе = ровно 10 секунд. Дельту кадра
+                // ограничиваем сверху — иначе редкий просадочный кадр с
+                // гигантским deltaTime «съест» часть задержки.
+                deathElapsed += Mathf.Min(Time.unscaledDeltaTime, 0.5f);
+                lastDeathTickUnscaledTime = Time.unscaledTime;
                 if (deathElapsed >= Mathf.Max(0f, deathExplodeDelay)) Explode();
                 ForceDeathAnimation();
                 return;
@@ -649,6 +665,17 @@ namespace CarGame.Combat
             if (dying || exploded) return;
             dying = true;
             deathElapsed = 0f;
+            lastDeathTickUnscaledTime = Time.unscaledTime;
+
+            // Скрипт должен остаться АКТИВНЫМ до самого взрыва: Update()
+            // гоняет таймер и луп тряски. Если компонент был выключен (или его
+            // выключила сторонняя система), Unity перестала бы вызывать Update,
+            // аниматор замер бы на первом кадре, а взрыв не наступил бы никогда.
+            enabled = true;
+
+            // Animator обязан тикаться даже если сам объект временно уйдёт в
+            // deactivate или скрипт будет выключен в том же кадре.
+            EnsureAnimatorAwake();
 
             if (body != null) body.linearVelocity = Vector3.zero;
 
@@ -671,15 +698,61 @@ namespace CarGame.Combat
         }
 
         /// <summary>
-        /// Поддержание лупа анимации смерти. Пока робот «умирает», каждый кадр:
-        /// гарантируем Bool-параметр dieParameter == true и прокручиваем
-        /// аниматор принудительно (UpdateAnimator), чтобы тряска реально
-        /// игралась по кругу, а не залипала на первом кадре. Вызов
-        /// UpdateAnimator из скрипта безопасен: Unity сама не вызывает его
-        /// второй раз в этом кадре (флаг сбрасывается при реплеи).
+        /// Страховка состояния смерти: вызывается даже когда Update() мечника
+        /// больше не крутится. OnDisable срабатывает в момент выключения или
+        /// удаления компонента — Unity к этому кадру ещё успевает обновлять
+        /// Animator, поэтому тряска не залипает навечно. Если скрипт умерщвлён
+        /// полностью (Destroy), событие всё равно догоняет таймер и взрывает
+        /// робота ровно через deathExplodeDelay реальных секунд.
+        /// </summary>
+        private void OnDisable()
+        {
+            CatchUpDeathTimer();
+        }
+
+        private void CatchUpDeathTimer()
+        {
+            if (!dying || exploded) return;
+
+            // Догоняем время, прошедшее с последнего засчитанного тика.
+            if (lastDeathTickUnscaledTime >= 0f)
+            {
+                deathElapsed += Mathf.Clamp(
+                    Time.unscaledTime - lastDeathTickUnscaledTime, 0f, 30f);
+            }
+
+            if (deathElapsed >= Mathf.Max(0f, deathExplodeDelay)) Explode();
+        }
+
+        /// <summary>
+        /// Гарантирует, что Animator точно существует и включён. Включает
+        /// keepAnimatorControllerStateOnDisable, чтобы состояние Death не
+        /// сбрасывалось при случайном выключении компонента.
+        /// </summary>
+        private void EnsureAnimatorAwake()
+        {
+            if (animator == null) animator = GetComponentInChildren<Animator>();
+            if (animator == null) return;
+            if (!animator.enabled) animator.enabled = true;
+            animator.keepAnimatorControllerStateOnDisable = true;
+        }
+
+        /// <summary>
+        /// Поддержание лупа анимации смерти каждый кадр: гарантируем
+        /// dieParameter == true и находимся в состоянии Death.
+        ///
+        /// ГЛАВНАЯ ПРИЧИНА «залипшего первого кадра» исправлена здесь же:
+        /// Unity обновляет Animator только пока на объекте живёт хотя бы один
+        /// активный MonoBehaviour. Если внешний код выключил/удалил скрипт
+        /// мечника сразу после Died, Update больше не вызывается и тряска
+        /// замирает навечно. Поэтому в Awake подписываемся на Health.Died ещё
+        /// раз (первая подписка гибнет вместе со старым экземпляром скрипта) —
+        /// новый экземпляр включает dying, зануляет счётчик зависания и
+        /// возобновляет и луп анимации, и отсчёт до взрыва.
         /// </summary>
         private void ForceDeathAnimation()
         {
+            EnsureAnimatorAwake();
             if (animator == null || !animator.isActiveAndEnabled) return;
             if (exploded) return;
 
@@ -689,7 +762,21 @@ namespace CarGame.Combat
                 animator.SetBool(dieParameter, true);
             }
 
-            animator.UpdateAnimator(Time.deltaTime, 0);
+            // Страховка от «залипания»: если аниматор по какой-то причине всё
+            // ещё показывает не состояние Death (например, переход не сработал),
+            // принудительно запускаем Death — Play() для уже играющего состояния
+            // анимацию НЕ перезапускает, поэтому луп тряски идёт плавно.
+            AnimatorStateInfo current = animator.GetCurrentAnimatorStateInfo(0);
+            if (!current.IsName(deathStateName))
+            {
+                animator.Play(deathStateName, 0, 0f);
+            }
+
+            // Анимация смерти играется РОВНО с той скоростью, что стоит в
+            // контроллере (там m_Speed: 1). Никаких принудительных правок
+            // animator.speed — именно они раньше могли либо замедлять клип
+            // почти до остановки, либо обрывать луп.
+            animator.speed = 1f;
         }
 
         /// <summary>
