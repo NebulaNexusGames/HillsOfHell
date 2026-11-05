@@ -1209,7 +1209,7 @@ MonoBehaviour:
   spinStagger: 0.6
   spinClip: {fileID: 8300000, guid: d6f14c38b5896614d814a64ebc793bc7, type: 3}
   spinVolume: 0.5
-  interfaceMusic: {fileID: 0}
+  interfaceMusic: {fileID: 8300000, guid: 9a96717c22513734d9d7c01644d5d2ff, type: 3}
   musicVolume: 0.4
   loopMusic: 1
   musicFade: 0.35

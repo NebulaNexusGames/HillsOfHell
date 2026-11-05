@@ -208,7 +208,7 @@ namespace CarGame.Items
             }
 
             Vector3 origin = ray.GetPoint(hitStartOffset);
-            int count = Physics.RaycastNonAlloc(origin, ray.direction, hitBuffer, hitRange, hitMask, QueryTriggerInteraction.Ignore);
+            int count = Physics.RaycastNonAlloc(origin, ray.direction, hitBuffer, hitRange, hitMask, QueryTriggerInteraction.Collide);
             SortByDistance(count);
 
             int damaged = 0;

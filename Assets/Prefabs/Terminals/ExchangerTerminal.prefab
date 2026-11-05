@@ -1085,7 +1085,7 @@ MonoBehaviour:
   countColor: {r: 0.62, g: 0.7, b: 0.78, a: 1}
   emptyColor: {r: 0.5, g: 0.55, b: 0.6, a: 1}
   iconPadding: 1
-  interfaceMusic: {fileID: 0}
+  interfaceMusic: {fileID: 8300000, guid: 602efe8105a85c942886eb0cff16ad7c, type: 3}
   loopMusic: 1
   musicVolume: 0.4
   musicFade: 0.35

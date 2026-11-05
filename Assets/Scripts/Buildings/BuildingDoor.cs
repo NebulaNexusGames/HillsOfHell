@@ -38,6 +38,8 @@ namespace CarGame.Buildings
         [SerializeField] private float kickSpeed = 260f;
         [Tooltip("Урон (условный), при котором дверь выламывается сразу: взрывы и тяжёлые попадания. 0 — выламывать только тараном мобов")]
         [SerializeField] private float breakDamage = 45f;
+        [Tooltip("После выламывания дверь исчезает через это время (сек). 0 — не исчезать. Выламанное полотно — физическая пустышка, заданная на удаление.")]
+        [SerializeField] private float breakDespawnDelay = 5f;
 
         [Header("Урон")]
         [Tooltip("Урон, полностью открывающий дверь")]
@@ -323,6 +325,44 @@ namespace CarGame.Buildings
             }
         }
 
+        /// <summary>
+        /// Дверь должна игнорировать мобов и игроков (кроме пола и стен, с
+        /// которыми сама физика работает). Иначе закрытая дверь физически
+        /// останавливает пришедшего — бот перед закрытой дверью «замораживается»
+        /// и не может дойти до точки за проёмом / не может выбить дверь.
+        /// </summary>
+        public void IgnoreCharacterColliders()
+        {
+            Collider[] ownColliders = GetComponentsInChildren<Collider>(true);
+            if (ownColliders.Length == 0) return;
+
+            Collider anchor = ownColliders[0];
+            Collider[] nearby = Physics.OverlapSphere(
+                anchor.bounds.center,
+                Mathf.Max(0.5f, anchor.bounds.extents.magnitude * 1.5f),
+                ~0, QueryTriggerInteraction.Collide);
+
+            for (int i = 0; i < ownColliders.Length; i++)
+            {
+                Collider own = ownColliders[i];
+                if (own == null || !own.enabled) continue;
+                for (int j = 0; j < nearby.Length; j++)
+                {
+                    Collider other = nearby[j];
+                    if (other == null || !other.enabled || other == own) continue;
+                    if (IsCharacterCollider(other)) Physics.IgnoreCollision(own, other, true);
+                }
+            }
+        }
+
+        private bool IsCharacterCollider(Collider candidate)
+        {
+            if (candidate == null || !candidate.enabled) return false;
+            if (candidate.GetComponentInParent<Health>() != null) return true;
+            if (candidate.GetComponentInParent<PlayerController>() != null) return true;
+            return false;
+        }
+
         private void PlaySound(AudioClip clip, AudioClip fallback)
         {
             if (audioSource == null) return;
@@ -561,11 +601,55 @@ namespace CarGame.Buildings
             body.AddTorque(worldAxis * (UnityEngine.Random.Range(0f, 1f) < 0.5f ? -1f : 1f) * kickSpinStrength, ForceMode.Impulse);
 
             PlaySound(openSound, ProceduralAudio.DoorOpen());
+            PlaySound(openSound != null ? null : ProceduralAudio.Impact(true), ProceduralAudio.Impact(true));
+
+            // После выламывания полотно — свободная физическая пустышка:
+            // через breakDespawnDelay она исчезает из мира (не валяется вечно).
+            // До этого отключаем с ней взаимодействие со ВСЕМИ остальными
+            // коллайдерами сцены (косяки рамы, стены, персонажи): иначе пустышка
+            // «застревает» в дверных косяках и физика тормозит пришедших.
+            IgnoreCollisionsWithWorld();
+
+            if (breakDespawnDelay > 0f) Destroy(gameObject, breakDespawnDelay);
+        }
+
+        /// <summary>
+        /// Выломанное полотно — свободная физическая пустышка: отключаем с ней
+        /// взаимодействие со всеми остальными коллайдерами сцены (косяки рамы,
+        /// стены, пол, персонажи), чтобы она не застревала в дверных косяках и
+        /// не тормозила физику пришедших. Свой Rigidbody остаётся физическим
+        /// (гравитация/свободный полёт), но коллайдеры больше не «цепляются».
+        /// </summary>
+        private void IgnoreCollisionsWithWorld()
+        {
+            Collider[] ownColliders = GetComponentsInChildren<Collider>(true);
+            Collider[] worldColliders = Object.FindObjectsOfType<Collider>(false);
+            if (worldColliders == null) return;
+
+            for (int i = 0; i < ownColliders.Length; i++)
+            {
+                Collider own = ownColliders[i];
+                if (own == null || !own.enabled) continue;
+                for (int j = 0; j < worldColliders.Length; j++)
+                {
+                    Collider other = worldColliders[j];
+                    if (other == null || other == own) continue;
+                    Physics.IgnoreCollision(own, other, true);
+                }
+            }
         }
 
         private void FixedUpdate()
         {
-            if (body == null || locked || IsBroken) return;
+            // До выламывания дверь — полноценное препятствие: не пропускает ничего.
+            // После выламывания (IsBroken) — свободная физическая пустышка, не должна блокировать никого.
+            if (IsBroken)
+            {
+                IgnoreCharacterColliders();
+                return;
+            }
+
+            if (body == null || locked) return;
 
             // Пока идёт активный замах удара — цель держится, дверь не «запирается».
             if (kickUntil > 0f)

@@ -1,6 +1,48 @@
-Setting linear velocity of a kinematic body is not supported.
-UnityEngine.Rigidbody:set_linearVelocity (UnityEngine.Vector3)
-CarGame.Vehicle.CarDoor:LockDoor () (at Assets/Scripts/Vehicle/CarDoor.cs:62)
-CarGame.Vehicle.CarDoor:CacheStart () (at Assets/Scripts/Vehicle/CarDoor.cs:54)
-CarGame.Vehicle.CarDoor:Awake () (at Assets/Scripts/Vehicle/CarDoor.cs:44)
+Assets\Scripts\Combat\RobotSwordsman.cs(356,46): error CS0103: The name 'IsOccupiedVehicleTarget' does not exist in the current context
+
+Assets\Scripts\Combat\RobotSwordsman.cs(375,37): error CS0103: The name 'ClosestCarPoint' does not exist in the current context
+
+Assets\Scripts\Combat\RobotSwordsman.cs(379,72): error CS0103: The name 'IsTargetColliderVisible' does not exist in the current context
+
+Assets\Scripts\Combat\RobotSwordsman.cs(455,65): error CS0103: The name 'IsAnimatorInAttackState' does not exist in the current context
+
+Assets\Scripts\Combat\RobotSwordsman.cs(464,21): error CS0103: The name 'ResetAttackTrigger' does not exist in the current context
+
+Assets\Scripts\Combat\RobotSwordsman.cs(481,39): error CS0103: The name 'UpdateMovementHysteresis' does not exist in the current context
+
+Assets\Scripts\Combat\RobotSwordsman.cs(502,17): error CS0103: The name 'ApplyState' does not exist in the current context
+
+Assets\Scripts\Combat\RobotSwordsman.cs(515,13): error CS0103: The name 'PlayAttack' does not exist in the current context
+
+Assets\Scripts\Combat\RobotSwordsman.cs(553,34): error CS0103: The name 'FlatTowards' does not exist in the current context
+
+Assets\Scripts\Combat\RobotSwordsman.cs(573,21): error CS0103: The name 'SetPatrolRouteAlongChosenDirection' does not exist in the current context
+
+Assets\Scripts\Combat\RobotSwordsman.cs(575,33): error CS0103: The name 'FlatTowards' does not exist in the current context
+
+Assets\Scripts\Combat\RobotSwordsman.cs(595,30): error CS0103: The name 'FlatTowards' does not exist in the current context
+
+Assets\Scripts\Combat\RobotSwordsman.cs(606,30): error CS0103: The name 'FlatTowards' does not exist in the current context
+
+Assets\Scripts\Combat\RobotSwordsman.cs(718,35): error CS0103: The name 'FlatTowards' does not exist in the current context
+
+Assets\Scripts\Combat\RobotSwordsman.cs(818,25): error CS0103: The name 'FlatTowards' does not exist in the current context
+
+Assets\Scripts\Combat\RobotSwordsman.cs(852,35): error CS0103: The name 'FlatTowards' does not exist in the current context
+
+Assets\Scripts\Combat\RobotSwordsman.cs(865,28): error CS0103: The name 'FlatTowards' does not exist in the current context
+
+Assets\Scripts\Combat\RobotSwordsman.cs(935,31): error CS0103: The name 'FlatTowards' does not exist in the current context
+
+Assets\Scripts\Combat\RobotSwordsman.cs(947,34): error CS0103: The name 'FlatTowards' does not exist in the current context
+
+Assets\Scripts\Combat\RobotSwordsman.cs(968,32): error CS0103: The name 'FlatTowards' does not exist in the current context
+
+Assets\Scripts\Combat\RobotSwordsman.cs(969,61): error CS0103: The name 'FlatTowards' does not exist in the current context
+
+Assets\Scripts\Combat\RobotSwordsman.cs(1185,17): error CS0103: The name 'ResetOtherStateBools' does not exist in the current context
+
+Assets\Scripts\Combat\RobotSwordsman.cs(1186,21): error CS0103: The name 'GetParameterType' does not exist in the current context
+
+Assets\Scripts\Combat\RobotSwordsman.cs(1255,20): error CS0103: The name 'GetParameterType' does not exist in the current context
 

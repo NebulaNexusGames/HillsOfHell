@@ -280,7 +280,7 @@ namespace CarGame.AI
         public BuildingDoor Door => door;
 
         /// <summary>Открыто ли полотно (или полотна вовсе нет — открытая арка).</summary>
-        public bool IsOpenOrAbsent => door == null || !door.IsClosed();
+        public bool IsOpenOrAbsent => door == null || door.IsBroken || !door.IsClosed();
 
         /// <summary>
         /// Проём сейчас «для наземных мобов» закрыт чем-то, что нельзя открыть
@@ -289,7 +289,7 @@ namespace CarGame.AI
         /// игнорирование мешающих коллайдеров («продавливание») — иначе моб
         /// вечно скользил бы вдоль косяка.
         /// </summary>
-        public bool IsEffectivelyBlockedForGround => door != null && door.IsClosed();
+        public bool IsEffectivelyBlockedForGround => door != null && !door.IsBroken && door.IsClosed();
 
         /// <summary>
         /// Проверка геометрии прохода для конкретного моба: достаточно ли ширины
@@ -306,10 +306,16 @@ namespace CarGame.AI
             if (!isFlying && zone.bounds.min.y - robotStepUp > FloorY + thresholdTolerance + 0.001f)
                 return false;
 
-            float clearanceNeeded = isFlying
-                ? Mathf.Max(droneMinCeiling, robotHeight + droneCeilingClearance)
-                : robotHeight;
-            if (CeilingHeight < clearanceNeeded) return false;
+            if (isFlying)
+            {
+                float clearanceNeeded = Mathf.Max(droneMinCeiling, robotHeight + droneCeilingClearance);
+                if (CeilingHeight >= clearanceNeeded) return true;
+                // Дрон может снизиться и пройти сквозь щель даже если формально не влезает по полной высоте
+                if (TryGetDroneThroughHeight(robotHeight, out _)) return true;
+                return false;
+            }
+
+            if (CeilingHeight < robotHeight) return false;
 
             return true;
         }

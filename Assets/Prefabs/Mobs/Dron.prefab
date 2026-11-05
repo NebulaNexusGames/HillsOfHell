@@ -871,6 +871,7 @@ MonoBehaviour:
   ceilingProbe: 3.5
   ceilingClearance: 0.45
   minGroundHeight: 1.2
+  flyingRobot: 1
   patrolAltitude: 6
   shootRange: 55
   fireInterval: 0.5

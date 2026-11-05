@@ -450,7 +450,13 @@ namespace CarGame.UI
             }
 
             Slot slot = aimedSlot;
-            if (slot == null && Cursor.visible) slot = SlotUnderPointer();
+            if (Cursor.visible)
+            {
+                // Руки/мышь: покупаем ТО, ЧТО под курсором/прицелом при
+                // самом нажатии — ровно один предмет за одно нажатие.
+                Slot pointed = SlotUnderPointer();
+                if (pointed != null) slot = pointed;
+            }
             if (slot == null) return;
 
             ShopTerminal.ShopOffer offer = slot.Offer;

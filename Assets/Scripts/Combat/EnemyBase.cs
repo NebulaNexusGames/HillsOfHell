@@ -492,6 +492,8 @@ namespace CarGame.Combat
                 if (distance > DetectRange + 4f) continue;
 
                 bool fits = doorway.FitsRobot(RobotDiameter, RobotHeight, stepUpHeight, flyingRobot);
+                // Vylomannaya dver - svobodnyy prokhod: posle BreakOpen polotno ne blokirovat,
+                // po etomu proyom nuzhno schitovat kak passuyushchiy, dazhe esli IsClosed() ejo ne sbrosilsya.
 
                 if (!fits)
                 {
@@ -530,12 +532,8 @@ namespace CarGame.Combat
 
             blockedDoorway = nearestBlocked;
 
-            // Приоритет двери, ведущей к цели: если такая есть и она отличается
-            // от ближайшей — идём к ней, а не метаемся между дверями.
-            if (targetDoorway != null && targetDoorway != best)
-            {
-                best = targetDoorway;
-            }
+            // Не отдаём жёсткий приоритет проёмам: используем ближайший подходящий проём впереди.
+            // Маршрут через проём строится в ResolveDestination, если путь к цели реально идёт через него.
 
             if (best == null)
             {
@@ -674,57 +672,47 @@ namespace CarGame.Combat
         /// на линии прохода по одну сторону стены) ИЛИ мобиль уже внутри зоны.
         /// Именно в этом случае стена проёма перестаёт быть препятствием.
         /// </summary>
-        private bool LooksThroughDoorway(DoorwayVolume doorway)
+                private bool LooksThroughDoorway(DoorwayVolume doorway)
         {
             if (doorway == null) return false;
 
             Vector3 center = doorway.Center;
             Vector3 toCenter = center - FrontPosition;
 
-            // Уже внутри коробки проёма (по горизонтали) — идём прямо.
             Vector3 passDir = doorway.PassDirection;
             Vector3 alongWall = Vector3.Cross(Vector3.up, passDir);
             if (alongWall.sqrMagnitude < 0.0001f) alongWall = transform.right;
             alongWall.Normalize();
 
-            float lateral = Vector3.Dot(toCenter, alongWall);
-            if (Mathf.Abs(lateral) <= doorway.HalfWidthAlongWall + 0.3f)
-            {
-                float longitudinal = Vector3.Dot(toCenter, passDir);
-                // Толщина зоны: если |longitudinal| мал — мы в зоне двери.
-                if (Mathf.Abs(longitudinal) <= 3.5f) return true;
-            }
+            float lateral = Mathf.Abs(Vector3.Dot(toCenter, alongWall));
+            float longitudinal = Mathf.Abs(Vector3.Dot(toCenter, passDir));
+            float halfW = doorway.HalfWidthAlongWall + Mathf.Max(0.35f, RobotDiameter * 0.6f);
 
-            // Робот на створе двери, но ещё снаружи: направление на центр
-            // проёма параллельно оси прохода (±~26°). Тогда цель «видна через
-            // дверь» и стена вокруг неё не мешает.
+            // Inside or very near the doorway volume: treat as passing through.
+            if (lateral <= halfW && longitudinal <= 4.5f) return true;
+
             Vector3 flatToDoor = Vector3.ProjectOnPlane(toCenter, Vector3.up);
             if (flatToDoor.sqrMagnitude < 0.01f) return true;
             flatToDoor.Normalize();
+
+            Vector3 forward = Vector3.ProjectOnPlane(transform.forward, Vector3.up);
+            if (forward.sqrMagnitude < 0.0001f) forward = flatToDoor;
+            forward.Normalize();
+
+            // Permissive: if the robot is heading generally toward the doorway opening, do not treat it as an impassable wall.
+            if (Vector3.Dot(forward, flatToDoor) >= 0.2f && lateral <= halfW + 1.2f && longitudinal <= 7f)
+                return true;
 
             Vector3 axisFlat = Vector3.ProjectOnPlane(passDir, Vector3.up);
             if (axisFlat.sqrMagnitude < 0.01f) return false;
             axisFlat.Normalize();
 
             float alignment = Mathf.Abs(Vector3.Dot(flatToDoor, axisFlat));
-            if (alignment < 0.9f) return false;
+            if (alignment >= 0.75f && Vector3.Dot(forward, flatToDoor) >= 0.2f) return true;
 
-            // Плюс робот должен смотреть примерно на дверь (иначе это «дверь
-            // сбоку», в которую моб не идёт).
-            Vector3 forward = Vector3.ProjectOnPlane(transform.forward, Vector3.up);
-            if (forward.sqrMagnitude > 0.01f
-                && Vector3.Dot(forward.normalized, flatToDoor) < 0.45f) return false;
-
-            return true;
+            return false;
         }
 
-        /// <summary>
-        /// Лежит ли точка за створом активного проёма (цель по другую сторону
-        /// стены): проекция вектора «робот → точка» на ось прохода меняет знак
-        /// относительно проекции центра двери, и боковое смещение точки не
-        /// вылезает за полуширину проёма. Используется для LineOfSight и
-        /// целеуказания: сквозь открытую дверь «видно» и «можно идти».
-        /// </summary>
         private bool PointBeyondActiveDoorway(Vector3 point)
         {
             DoorwayVolume doorway = activeDoorway;
@@ -759,11 +747,46 @@ namespace CarGame.Combat
         /// True — если коллайдер принадлежит стене/полотну проёма, в который
         /// робот сейчас смотрит. Вызывается из IsBlocked/Sweep-фильтров.
         /// </summary>
-        private bool BlocksByActiveDoorway(Collider candidate)
+                private bool BlocksByActiveDoorway(Collider candidate)
         {
-            if (candidate == null || activeDoorway == null) return false;
-            if (!activeDoorway.BelongsToStructure(candidate)) return false;
-            return LooksThroughDoorway(activeDoorway);
+            if (candidate == null) return false;
+
+            DoorwayVolume doorway = activeDoorway;
+            if (doorway == null && blockedDoorway != null && IsDoorwayAhead(blockedDoorway, -0.25f))
+                doorway = blockedDoorway;
+            if (doorway == null) return false;
+            if (!doorway.BelongsToStructure(candidate))
+            {
+                // Also ignore the door collider itself when targeting this doorway.
+                if (doorway.HasDoor && doorway.Door != null)
+                {
+                    Transform t = candidate.transform;
+                    Transform d = doorway.Door.transform;
+                    if (t != d && !t.IsChildOf(d)) return false;
+                }
+                else return false;
+            }
+
+            // When a doorway is the relevant pass-through, don't confuse its structure with an insurmountable obstacle.
+            if (LooksThroughDoorway(doorway)) return true;
+
+            Vector3 toDoor = doorway.Center - FrontPosition;
+            float dist = toDoor.magnitude;
+            if (dist <= 6f)
+            {
+                Vector3 flatToDoor = Vector3.ProjectOnPlane(toDoor, Vector3.up);
+                Vector3 forward = Vector3.ProjectOnPlane(transform.forward, Vector3.up);
+                if (flatToDoor.sqrMagnitude > 0.001f && forward.sqrMagnitude > 0.001f
+                    && Vector3.Dot(forward.normalized, flatToDoor.normalized) >= 0.0f)
+                {
+                    bool fits = doorway.FitsRobot(RobotDiameter, RobotHeight, stepUpHeight, flyingRobot);
+                // Vylomannaya dver - svobodnyy prokhod: posle BreakOpen polotno ne blokirovat,
+                // po etomu proyom nuzhno schitovat kak passuyushchiy, dazhe esli IsClosed() ejo ne sbrosilsya.
+                    if (fits || doorway.HasDoor) return true;
+                }
+            }
+
+            return false;
         }
 
         protected virtual void BaseAwake()
@@ -1262,29 +1285,25 @@ namespace CarGame.Combat
 
         /// <summary>
         /// Точка прицеливания маршрута для прохода через проём: центр окна
-        /// прохода, приподнятый над порогом на половину высоты корпуса моба
-        /// (для дрона — с учётом свода). Наземные роботы ведутся в центр
-        /// проёма, чтобы не скользить вдоль косяка; точка смещается на
-        /// половину ширины прохода в сторону робота, чтобы моб не остановился
-        /// ровно в дверях.
+        /// прохода на подходящей высоте. Робот направляется сквозь проём, а не
+        /// останавливается перед ним.
         /// </summary>
         protected Vector3 DoorwayAimPoint(DoorwayVolume doorway)
         {
             Vector3 center = doorway.Center;
 
-            // Смещение точки входа на себя: иначе цель совпадает с центром
-            // узкой зоны и поведение зависит от того, успел ли триггер
-            // переключиться после пересечения плоскости стены.
+            // Направляемся сквозь проём в сторону цели/противоположную от робота,
+            // чтобы пройти насквозь и не застревать у входа.
             Vector3 toSelf = transform.position - center;
             Vector3 passDir = doorway.PassDirection;
             float side = Mathf.Sign(Vector3.Dot(toSelf, passDir));
             if (side == 0f) side = 1f;
 
-            float pullback = Mathf.Min(PassageHalfAlongAxis(doorway), 1f) * 0.5f;
-            Vector3 aim = center + passDir * side * pullback;
+            float pushThrough = Mathf.Min(PassageHalfAlongAxis(doorway), 1.5f) + 0.8f;
+            Vector3 aim = center - passDir * side * pushThrough;
 
-            // Летающий моб целился в геометрический центр коробки; наземный —
-            // в центр на своей штатной высоте, чтобы не «смотреть в потолок».
+            // Летающий моб целится в центр проёма по высоте; наземный —
+            // на своей штатной высоте, чтобы не «смотреть в потолок».
             if (!flyingRobot)
             {
                 aim.y = transform.position.y;
@@ -1509,33 +1528,24 @@ namespace CarGame.Combat
             lastBlockerFrame = Time.frameCount;
         }
 
-        protected Vector3 ComputeAvoidance(Vector3 desiredDirection)
+                protected Vector3 ComputeAvoidance(Vector3 desiredDirection)
         {
             Vector3 flat = Vector3.ProjectOnPlane(desiredDirection, Vector3.up);
             if (flat.sqrMagnitude < 0.0001f) return desiredDirection;
 
             flat.Normalize();
 
-            // Приоритет дверного проёма (по ТЗ): если перед мобом есть зона
-            // DoorwayVolume, моб НЕ отходит и не скользит вдоль стены — он
-            // направляется В САМ ПРОЁМ. Это работает и когда проём «проходимый»
-            // (активный), и когда моб в него не пролезает по габаритам
-            // (непроходимый): во втором случае включается режим игнорирования
-            // мешающих коллайдеров — моб идёт сквозь них прямо к двери.
-            if (blockedDoorway != null && IsDoorwayAhead(blockedDoorway, -0.2f))
+            DoorwayVolume doorwayToEnter = DoorwayToEnter;
+            if (doorwayToEnter != null)
             {
-                Vector3 toDoor = Vector3.ProjectOnPlane(blockedDoorway.Center - FrontPosition, Vector3.up);
+                // Doorway is a pass-through opening on the path: head through it, do not treat as an obstacle to avoid around.
+                Vector3 aim = DoorwayAimPoint(doorwayToEnter);
+                Vector3 toAim = Vector3.ProjectOnPlane(aim - FrontPosition, Vector3.up);
+                if (toAim.sqrMagnitude > 0.0001f) return toAim.normalized;
+                Vector3 toDoor = Vector3.ProjectOnPlane(doorwayToEnter.Center - FrontPosition, Vector3.up);
                 if (toDoor.sqrMagnitude > 0.01f) return toDoor.normalized;
             }
 
-            if (activeDoorway != null && LooksThroughDoorway(activeDoorway))
-            {
-                Vector3 toActive = Vector3.ProjectOnPlane(activeDoorway.Center - FrontPosition, Vector3.up);
-                if (toActive.sqrMagnitude > 0.01f) return toActive.normalized;
-            }
-
-            // Аварийный режим «продавливания»: упёрся телом в препятствие и
-            // смотрит в непроходимый проём — идём строго в центр двери.
             if (ShouldIgnoreBlockers() && blockedDoorway != null)
             {
                 Vector3 toDoor = Vector3.ProjectOnPlane(blockedDoorway.Center - FrontPosition, Vector3.up);
@@ -1551,9 +1561,6 @@ namespace CarGame.Combat
 
             Vector3 bodyOrigin = FrontPosition + Vector3.up * (bodyHalfHeight * 2f * (avoidHeightFactor - 0.5f));
 
-            // Аварийный режим: упёрся и смотрит в «непобедимый» проём (закрытая
-            // намертво дверь / зона не проходит по габаритам) — игнорируем ВСЕ
-            // мешающие коллайдеры на пути к двери, идём прямо телом.
             if (ShouldIgnoreBlockers()) return flat;
 
             if (!IsBlocked(bodyOrigin, flat, halfExtents)) return flat;
@@ -1647,13 +1654,17 @@ namespace CarGame.Combat
             detourActive = true;
         }
 
-        protected bool IsPathClear(Vector3 direction)
+                protected bool IsPathClear(Vector3 direction)
         {
             if (obstacleProbe <= 0.05f) return true;
 
             Vector3 flat = Vector3.ProjectOnPlane(direction, Vector3.up);
             if (flat.sqrMagnitude < 0.0001f) return true;
             flat.Normalize();
+
+            // When passing through a doorway, don't let its structure register as a blocked path.
+            if (DoorwayToEnter != null && IsDoorwayAhead(DoorwayToEnter, -0.25f))
+                return true;
 
             Vector3 origin = FrontPosition + Vector3.up * (bodyHalfHeight * 2f * (avoidHeightFactor - 0.5f));
             if (IsBlocked(origin, flat, halfExtents * 0.5f)) return false;
@@ -1663,7 +1674,10 @@ namespace CarGame.Combat
             if (avoidLowDebris
                 && Sweep(debrisOrigin, debrisExtents, flat, bodyHalfHeight)
                 && !IsSelf(BlockingCollider)
-                && !IsGroundClimbable(flat))
+                && !IsTargetCollider(BlockingCollider)
+                && !BlocksByActiveDoorway(BlockingCollider)
+                && !IsGroundClimbable(flat)
+                && !IsStepUpAhead(flat))
                 return false;
 
             return true;
@@ -1806,12 +1820,9 @@ namespace CarGame.Combat
 
             if (Sweep(origin, extents, direction, obstacleProbe) && !IsSelf(BlockingCollider) && !IsTargetCollider(BlockingCollider))
             {
-                // Стена/полотно активного дверного проёма, в который робот
-                // смотрит, — НЕ препятствие: моб обязан идти прямо в дверь, а
-                // не скользить вдоль косяка и не разворачиваться от «стены».
                 if (BlocksByActiveDoorway(BlockingCollider)) return false;
 
-                if (IsGroundClimbable(direction))
+                if (IsGroundClimbable(direction) || IsStepUpAhead(direction))
                 {
                     climbing = true;
                     return false;
@@ -1828,6 +1839,14 @@ namespace CarGame.Combat
             if (Sweep(debrisOrigin, debrisExtents, direction, obstacleProbe * 0.6f) && !IsSelf(BlockingCollider) && !IsTargetCollider(BlockingCollider))
             {
                 if (BlocksByActiveDoorway(BlockingCollider)) return false;
+
+                // Small threshold/step at foot level (e.g., house entrance): step up instead of treating as impassable debris.
+                if (IsGroundClimbable(direction) || IsStepUpAhead(direction))
+                {
+                    climbing = true;
+                    return false;
+                }
+
                 return true;
             }
 
@@ -1941,17 +1960,63 @@ namespace CarGame.Combat
             if (!climbing) return 0f;
 
             float rise = MeasureStepAhead(direction);
-            if (rise <= stepUpHeight) return 0f;
+            if (rise < -0.02f) return 0f;
 
             Vector3 flat = Vector3.ProjectOnPlane(direction, Vector3.up);
             if (flat.sqrMagnitude < 0.0001f) return 0f;
 
+            // Small step/threshold (no slope, rise at or below foot level): boost upward to step over it.
+            float stepLimit = Mathf.Max(0.05f, stepUpHeight + 0.08f);
+            if (rise <= stepLimit)
+                return Mathf.Max(1.5f, speed * 0.75f);
+
+            // Slope climb
             float run = Mathf.Max(slopeProbeDistance, flat.magnitude);
             float slope = rise / run;
             float maxSlope = Mathf.Tan(maxClimbSlope * Mathf.Deg2Rad);
-            if (slope <= maxSlope) return 0f;
+            if (slope <= maxSlope) return Mathf.Max(1f, speed * 0.45f);
 
-            return Mathf.Min(speed * 0.5f, speed * slope);
+            return Mathf.Min(speed * 0.55f, Mathf.Max(1f, speed * slope));
+        }
+
+        private bool IsStepUpAhead(Vector3 direction)
+        {
+            Vector3 flat = Vector3.ProjectOnPlane(direction, Vector3.up);
+            if (flat.sqrMagnitude < 0.0001f) return false;
+            flat.Normalize();
+
+            float here = GroundHeightAt(FrontPosition);
+            if (here < -900f) return false;
+
+            // Probe close in front (thresholds/steps can be right at the feet) and a bit further.
+            float closeDist = Mathf.Clamp(RobotBodyRadius + 0.25f, 0.25f, Mathf.Max(0.35f, slopeProbeDistance));
+            float aheadClose = GroundHeightAt(FrontPosition + flat * closeDist);
+            float aheadFar = GroundHeightAt(FrontPosition + flat * Mathf.Max(closeDist + 0.15f, slopeProbeDistance * 0.5f));
+
+            float rise = Mathf.Max(
+                aheadClose >= -900f ? aheadClose - here : -1000f,
+                aheadFar >= -900f ? aheadFar - here : -1000f);
+
+            if (rise < 0.02f) return false;
+            if (rise > stepUpHeight + 0.12f) return false;
+
+            // Ensure the space above the step is clear enough to stand.
+            Vector3 stepOrigin = FrontPosition + flat * Mathf.Min(closeDist, 0.45f) + Vector3.up * (stepUpHeight + RobotBodyHeight * 0.5f + 0.05f);
+            Vector3 stepExtents = new Vector3(Mathf.Max(0.1f, RobotBodyRadius * 0.6f), Mathf.Max(0.1f, RobotBodyHeight * 0.35f), Mathf.Max(0.1f, RobotBodyRadius * 0.6f));
+            if (Physics.OverlapBoxNonAlloc(stepOrigin, stepExtents, sweepBuffer, Quaternion.identity, obstacleMask, QueryTriggerInteraction.Ignore) > 0)
+            {
+                for (int i = 0; i < 16; i++)
+                {
+                    Collider c = sweepBuffer[i];
+                    if (c == null) continue;
+                    if (IsSelf(c) || IsTargetCollider(c)) continue;
+                    if (BlocksByActiveDoorway(c)) continue;
+                    // blocked above - but still allow small step attempt
+                    break;
+                }
+            }
+
+            return true;
         }
 
         private float MeasureStepAhead(Vector3 direction)

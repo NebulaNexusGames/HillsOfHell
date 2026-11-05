@@ -1,4 +1,5 @@
 using CarGame.AI;
+using CarGame.Buildings;
 using CarGame.Player;
 using CarGame.Vehicle;
 using UnityEngine;
@@ -423,6 +424,17 @@ namespace CarGame.Combat
             }
 
             bool mayMove = !holdingAfterStrike && !attackPlaying && !patrolTurning;
+            // --- Выломанная дверь на пути преследования ---
+            // Бот ломит закрытую дверь, торому й дважет к цели вы
+            // (что чрез дверной проход): после BreakOpen полотно вылама ставит
+            // физицеской пустышкой, и бот проходит дальше. Открытые двери и
+            // уже выламые бот не тогат.
+            if (engaged && mayMove)
+            {
+                TryBreakBlockingDoor();
+            }
+
+
 
             UpdateStuckCheck(body != null ? body.linearVelocity : Vector3.zero, mayMove);
 
@@ -528,7 +540,8 @@ namespace CarGame.Combat
             // Дверной проём впереди — НЕ повод вставать на поворотную стоянку:
             // курс через дверь всегда «свободный» (по ТЗ мечник направляется в
             // проём, а не отходит). Цель — точка входа в проём.
-            DoorwayVolume doorway = DoorwayToEnter;
+            CarGame.AI.DoorwayVolume doorway = DoorwayToEnter;
+            if (doorway == null) doorway = FindNearestPassableDoorwayAhead(8f);
             if (doorway != null)
             {
                 if (patrolTurning)
@@ -538,7 +551,7 @@ namespace CarGame.Combat
                     rayFrozen = false;
                 }
                 stuckWhileWalking = 0f;
-                Vector3 toDoor = FlatTowards(doorway.Center - transform.position);
+                Vector3 toDoor = FlatTowards(DoorwayPassThroughPoint(doorway) - transform.position);
                 patrolTurnTo = toDoor;
                 direction = toDoor;
                 return;
@@ -866,6 +879,10 @@ namespace CarGame.Combat
                 if (other.transform.root == transform.root) return true; // сам робот
                 if (Target != null && !Target.Equals(null)
                     && other.transform.root == Target.transform.root) return true; // цель
+                // Doorway-aware detection: do not treat passable doorway openings/walls as insurmountable obstacles.
+                if (IsPassableDoorwayHit(other, flat, origin))
+                    return true;
+
                 return false;
             }
 

@@ -1,6 +1,7 @@
-using System.Collections;
+﻿using System.Collections;
 using CarGame.AI;
 using CarGame.Audio;
+using CarGame.Buildings;
 using UnityEngine;
 
 namespace CarGame.Combat
@@ -591,43 +592,258 @@ namespace CarGame.Combat
 
         private void UpdateAttack()
         {
-            // По ТЗ: в момент атаки дрон двигаться не должен. После выстрела
-            // орбита замораживается на shotFreezeDuration: dron висит на месте,
-            // только доворачивая нос к цели.
             bool frozen = Time.time < shotFreezeUntil;
 
             if (!frozen) orbitAngle += orbitSpeed * Time.deltaTime;
 
-            Vector3 targetPosition = Target.transform.position;
+            if (HasTarget && Target != null && !Target.Equals(null))
+            {
+                Vector3 targetPosition = Target.transform.position;
+                float distanceToTarget = Vector3.Distance(transform.position, targetPosition);
+                bool hasLoS = HasLineOfSight(Target);
 
-            // Дрон сам меняет высоту по ситуации: цель может быть внутри
-            // здания (игрок спрятался) или на другой высоте — точка зависания
-            // берётся над целью, а «протискивание» сквозь дверной проём/свод
-            // делает ApplyDoorwayAltitude внутри Move(). Единственная страховка
-            // снизу: если под самой точкой зависания нет пола и есть пол далеко
-            // внизу, не даём целевой точке уходить ниже безопасного минимума.
-            float anchorY = targetPosition.y + hoverHeight;
+                bool canShoot = !frozen
+                    && Time.time >= nextFireTime
+                    && distanceToTarget <= shootRange
+                    && hasLoS;
 
-            Vector3 anchor = new Vector3(targetPosition.x, anchorY, targetPosition.z);
-            Vector3 offset = Quaternion.AngleAxis(Mathf.Rad2Deg * orbitAngle, Vector3.up) * Vector3.right * orbitRadius;
-            Vector3 destination = anchor + offset;
+                Vector3 destination = Vector3.zero;
+                if (canShoot)
+                {
+                    float anchorY = targetPosition.y + hoverHeight;
+                    Vector3 anchor = new Vector3(targetPosition.x, anchorY, targetPosition.z);
+                    Vector3 offset = Quaternion.AngleAxis(Mathf.Rad2Deg * orbitAngle, Vector3.up) * Vector3.right * orbitRadius;
+                    destination = anchor + offset;
 
-            Vector3 toDestination = destination - FrontPosition;
-            UpdateStuckCheck(velocity, !frozen && toDestination.sqrMagnitude > 0.0001f);
-            Move(frozen ? Vector3.zero : toDestination, frozen ? 0f : moveSpeed);
-            FaceTarget(Target.transform.position + Vector3.up, turnSpeed, Time.deltaTime);
+                    // If orbit point is blocked by structure (e.g. drone inside building, target outside), fall back to pursuit through doorway.
+                    if (!HasClearAirPath(destination))
+                    {
+                        canShoot = false;
+                    }
+                }
 
-            if (Time.time < nextFireTime) return;
+                if (!canShoot)
+                {
+                    Vector3 aimPoint = HasLastKnownTargetPosition ? LastKnownTargetPosition : targetPosition;
+                    DoorwayVolume routeDoor = FindBestPursuitDoorway(aimPoint);
+                    if (routeDoor != null)
+                    {
+                        Vector3 passPoint = DoorwayPassThroughPoint3D(routeDoor, aimPoint);
+                        destination = passPoint;
+                    }
+                    else
+                    {
+                        float aimHeight = aimPoint.y + hoverHeight;
+                        destination = new Vector3(aimPoint.x, aimHeight, aimPoint.z);
+                    }
 
-            float distance = Vector3.Distance(transform.position, Target.transform.position);
-            if (distance > shootRange) return;
-            if (!HasLineOfSight(Target)) return;
+                    // If stuck/not making progress near a doorway, push further through it.
+                    if (velocity.sqrMagnitude < 0.25f)
+                    {
+                        DoorwayVolume near = routeDoor != null ? routeDoor : FindDoorwayNear(transform.position, 3.5f);
+                        if (near != null)
+                        {
+                            destination = DoorwayPassThroughPoint3D(near, aimPoint, 2.4f);
+                        }
+                    }
+                }
 
-            nextFireTime = Time.time + fireInterval;
-            shotFreezeUntil = Time.time + (shotFreezeDuration > 0f
-                ? shotFreezeDuration
-                : Mathf.Max(0.15f, fireInterval / 3f));
-            Fire();
+                TryBreakDoorOnContact();
+
+                Vector3 toDestination = destination - FrontPosition;
+                UpdateStuckCheck(velocity, !frozen && toDestination.sqrMagnitude > 0.0001f);
+                Move(frozen ? Vector3.zero : toDestination, frozen ? 0f : moveSpeed);
+                FaceTarget(Target.transform.position + Vector3.up, turnSpeed, Time.deltaTime);
+
+                if (Time.time < nextFireTime) return;
+                // Re-check shoot conditions at fire time: don't shoot ineffectively from inside/stuck positions.
+                if (!HasLineOfSight(Target)) return;
+                if (Vector3.Distance(transform.position, targetPosition) > shootRange) return;
+                if (velocity.sqrMagnitude < 0.02f && !HasClearAirPath(targetPosition + Vector3.up)) return;
+
+                nextFireTime = Time.time + fireInterval;
+                shotFreezeUntil = Time.time + (shotFreezeDuration > 0f
+                    ? shotFreezeDuration
+                    : Mathf.Max(0.15f, fireInterval / 3f));
+                Fire();
+            }
+        }
+
+        private bool HasClearAirPath(Vector3 worldPoint)
+        {
+            Vector3 from = FrontPosition;
+            Vector3 delta = worldPoint - from;
+            float dist = delta.magnitude;
+            if (dist < 0.05f) return true;
+            return !Physics.SphereCast(from, Mathf.Max(0.15f, crashRadius * 0.45f), delta / dist, out _, dist, crashMask, QueryTriggerInteraction.Ignore);
+        }
+
+        private DoorwayVolume FindBestPursuitDoorway(Vector3 aimPoint)
+        {
+            // Prefer EnemyBase's active/target doorway when relevant.
+            if (ActiveDoorway != null) return ActiveDoorway;
+            if (DoorwayToEnter != null) return DoorwayToEnter;
+
+            DoorwayVolume between = FindDoorwayBetween(transform.position, aimPoint, 18f);
+            if (between != null) return between;
+
+            // Fallback: doorway near drone that leads toward target, else near target.
+            DoorwayVolume nearDrone = FindDoorwayToward(aimPoint, 10f);
+            if (nearDrone != null) return nearDrone;
+
+            return FindDoorwayNear(aimPoint, 12f);
+        }
+
+        private DoorwayVolume FindDoorwayBetween(Vector3 from, Vector3 to, float maxDistance)
+        {
+            DoorwayVolume best = null;
+            float bestScore = float.MaxValue;
+            var list = DoorwayVolume.All;
+            Vector3 seg = to - from;
+            float segLen = seg.magnitude;
+            if (segLen < 0.01f) return null;
+
+            for (int i = 0; i < list.Count; i++)
+            {
+                var d = list[i];
+                if (d == null) continue;
+                if (Vector3.Distance(d.Center, from) > maxDistance && Vector3.Distance(d.Center, to) > maxDistance) continue;
+                if (!d.FitsRobot(BodyDiameter, BodyHeight, StepUpValue, true) && !d.HasDoor) continue;
+
+                Vector3 toDoor = d.Center - from;
+                float t = Mathf.Clamp01(Vector3.Dot(toDoor, seg / segLen) / segLen);
+                Vector3 proj = from + seg * t;
+                float lateral = Vector3.ProjectOnPlane(d.Center - proj, Vector3.up).magnitude;
+                if (lateral > Mathf.Max(2.5f, d.HalfWidthAlongWall + 1.5f)) continue;
+
+                float distFrom = Vector3.Distance(from, d.Center);
+                float score = distFrom + lateral * 2f - t * 0.5f;
+                if (score < bestScore)
+                {
+                    bestScore = score;
+                    best = d;
+                }
+            }
+
+            return best;
+        }
+
+        private DoorwayVolume FindDoorwayToward(Vector3 aimPoint, float maxDistance)
+        {
+            DoorwayVolume best = null;
+            float bestDist = float.MaxValue;
+            var list = DoorwayVolume.All;
+            Vector3 toAim = aimPoint - transform.position;
+            if (toAim.sqrMagnitude < 0.001f) return null;
+            toAim.Normalize();
+
+            for (int i = 0; i < list.Count; i++)
+            {
+                var d = list[i];
+                if (d == null) continue;
+                Vector3 toDoor = d.Center - transform.position;
+                float dist = toDoor.magnitude;
+                if (dist > maxDistance) continue;
+                if (dist < 0.001f) continue;
+                if (Vector3.Dot(toAim, toDoor / dist) < 0.1f) continue;
+                if (!d.FitsRobot(BodyDiameter, BodyHeight, StepUpValue, true) && !d.HasDoor) continue;
+
+                if (dist < bestDist)
+                {
+                    bestDist = dist;
+                    best = d;
+                }
+            }
+
+            return best;
+        }
+
+        private Vector3 DoorwayPassThroughPoint3D(DoorwayVolume doorway, Vector3 aimPoint, float extraPush = 1.5f)
+        {
+            Vector3 pass = doorway.PassDirection;
+            Vector3 flatPass = Vector3.ProjectOnPlane(pass, Vector3.up);
+            if (flatPass.sqrMagnitude < 0.0001f) flatPass = Vector3.forward;
+            flatPass.Normalize();
+
+            Vector3 toAim = Vector3.ProjectOnPlane(aimPoint - doorway.Center, Vector3.up);
+            float aimSide = toAim.sqrMagnitude > 0.001f ? Mathf.Sign(Vector3.Dot(toAim, flatPass)) : 0f;
+            if (aimSide == 0f)
+            {
+                float droneSide = Mathf.Sign(Vector3.Dot(transform.position - doorway.Center, flatPass));
+                aimSide = droneSide == 0f ? 1f : -droneSide;
+            }
+
+            Vector3 point = doorway.Center + flatPass * aimSide * extraPush;
+            float passY = Mathf.Max(doorway.FloorY + 1.6f, aimPoint.y + Mathf.Min(hoverHeight, 2.5f));
+            if (doorway.TryGetDroneThroughHeight(BodyHeight, out float throughY))
+                passY = Mathf.Max(doorway.FloorY + 1.2f, throughY);
+            else if (doorway.TryGetDronePassHeight(BodyDiameter, BodyHeight, out float fitY))
+                passY = Mathf.Max(doorway.FloorY + 1.2f, fitY);
+            point.y = passY;
+            return point;
+        }
+
+        private void TryBreakDoorOnContact()
+        {
+            // Дрон выбивает закрытую дверь при контакте/приближении (как мечник)
+            TryBreakDoor(DoorwayToEnter);
+            TryBreakDoor(BlockedDoorway);
+            TryBreakDoor(ActiveDoorway);
+            TryBreakDoor(FindDoorwayNear(transform.position, 3f));
+        }
+
+        private void TryBreakDoor(CarGame.AI.DoorwayVolume doorway)
+        {
+            if (doorway == null || doorway.Equals(null) || !doorway.HasDoor) return;
+
+            var door = doorway.Door;
+            if (door == null || door.IsBroken || !door.IsClosed()) return;
+
+            float dist = Vector3.Distance(transform.position, doorway.Center);
+            if (dist <= 3f)
+            {
+                door.BreakOpen(transform.position);
+            }
+        }
+
+        private void OnTriggerStay(Collider other)
+        {
+            if (other == null) return;
+            var door = other.GetComponentInParent<BuildingDoor>();
+            if (door != null && door.IsClosed() && !door.IsBroken)
+            {
+                door.BreakOpen(transform.position);
+            }
+        }
+
+        private void OnCollisionStay(Collision collision)
+        {
+            if (collision == null) return;
+            var door = collision.collider != null ? collision.collider.GetComponentInParent<BuildingDoor>() : null;
+            if (door != null && door.IsClosed() && !door.IsBroken)
+            {
+                door.BreakOpen(transform.position);
+            }
+        }
+
+        private CarGame.AI.DoorwayVolume FindDoorwayNear(Vector3 point, float radius)
+        {
+            CarGame.AI.DoorwayVolume best = null;
+            float bestDist = float.MaxValue;
+            var list = CarGame.AI.DoorwayVolume.All;
+            for (int i = 0; i < list.Count; i++)
+            {
+                var d = list[i];
+                if (d == null) continue;
+                float dist = Vector3.Distance(d.Center, point);
+                if (dist > radius) continue;
+                if (dist < bestDist)
+                {
+                    bestDist = dist;
+                    best = d;
+                }
+            }
+            return best;
         }
 
         private void Move(Vector3 direction, float speed)
